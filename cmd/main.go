@@ -296,6 +296,9 @@ func main() {
 				err := cm.AddChannel(&ch)
 				if err != nil {
 					zap.L().Error("Failed to add channel", zap.String("channel", ch.Name), zap.Error(err))
+					// 启动加载失败的通道进入隔离区：保留在持久化视图中，
+					// 防止后续任意一次全量保存把它从 DB 静默删除（P0 数据丢失防护）。
+					cm.QuarantineChannel(&ch, err.Error())
 					continue
 				}
 

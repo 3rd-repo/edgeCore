@@ -8,6 +8,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	drv "github.com/anviod/edgeCore/internal/driver"
@@ -55,7 +56,10 @@ type ChannelManager struct {
 	pointDegradation      *PointDegradationManager
 	soakMonitor           *SoakMonitor
 	jobs                  *AsyncJobManager
-	deviceIDs             map[string]struct{} // 全局设备 ID 集合，O(1) 唯一性检查
+	deviceIDs             map[string]struct{}      // 全局设备 ID 集合，O(1) 唯一性检查
+	quarantined           map[string]model.Channel // 启动加载失败的通道隔离区：持久化视图保留，防"拒收即丢失"
+	saveSeq               atomic.Uint64            // saveChannels 快照序号（latest-wins）
+	saveWriteMu           sync.Mutex               // saveChannels 落盘串行锁
 }
 
 func NewChannelManager(pipeline *DataPipeline, saveFunc func([]model.Channel) error) *ChannelManager {
@@ -86,6 +90,7 @@ func NewChannelManager(pipeline *DataPipeline, saveFunc func([]model.Channel) er
 		pointDegradation:     NewPointDegradationManager(),
 		jobs:                 NewAsyncJobManager(),
 		deviceIDs:            make(map[string]struct{}),
+		quarantined:          make(map[string]model.Channel),
 	}
 
 	scanEngine.SetCollectFinalize(cm.finalizeScanCollect)
@@ -626,6 +631,7 @@ func (cm *ChannelManager) AddChannel(ch *model.Channel) error {
 	}
 
 	// Persist asynchronously — never block CRUD on bbolt I/O while holding cm.mu.
+	cm.clearQuarantineLocked(ch.ID) // 同 ID 通道成功加载/创建即解除启动隔离
 	_ = cm.saveChannels()
 
 	//	zap.L().Info("Channel added", zap.String("channel", ch.Name), zap.String("protocol", ch.Protocol), zap.Int("device_count", len(ch.Devices)))
@@ -768,6 +774,7 @@ func (cm *ChannelManager) UpdateChannel(ch *model.Channel) error {
 	}
 
 	// 4. Persist asynchronously
+	cm.clearQuarantineLocked(ch.ID) // 更新成功即解除启动隔离
 	_ = cm.saveChannels()
 
 	zap.L().Info("Channel updated", zap.String("channel", ch.Name))
@@ -785,6 +792,16 @@ func (cm *ChannelManager) RemoveChannel(channelID string) error {
 
 	ch, exists := cm.channels[channelID]
 	if !exists {
+		// 通道可能在启动隔离区（加载被校验拒绝、未注册运行时状态）——
+		// 显式删除同样生效：清隔离并持久化。
+		if _, inQuarantine := cm.quarantined[channelID]; inQuarantine {
+			cm.clearQuarantineLocked(channelID)
+			_ = cm.saveChannels()
+			zap.L().Info("Quarantined channel removed",
+				zap.String("channel_id", channelID))
+			cm.notifyTopologyChange()
+			return nil
+		}
 		return fmt.Errorf("channel not found")
 	}
 
@@ -2959,23 +2976,72 @@ func (cm *ChannelManager) withDriverIO(channelID, protocol string, fn func() err
 // saveChannels 辅助方法：保存所有通道配置。
 // NOTE: Caller must hold cm.mu.Lock. This method copies the channel data
 // and delegates to saveFunc in a goroutine so the lock is not held during I/O.
+//
+// 持久化视图 = cm.channels ∪ cm.quarantined：
+// 启动时 AddChannel 校验失败的通道保留在隔离区并继续写入 DB，防止
+// "校验拒收 → 全量覆盖 → 通道被静默删除"（P0 数据丢失事故，2026-10-13）。
+// 隔离通道随任一次成功的 Add/Update（同 ID）或显式 Remove 解除。
+//
+// 落盘采用 latest-wins：并发快照只有最新一份会真正写 DB，避免旧快照
+// 后完成而覆盖新状态（async 乱序丢更新）。
 func (cm *ChannelManager) saveChannels() error {
 	if cm.saveFunc == nil {
 		return nil
 	}
 	// Copy channel data under caller's lock
-	channels := make([]model.Channel, 0, len(cm.channels))
+	channels := make([]model.Channel, 0, len(cm.channels)+len(cm.quarantined))
 	for _, c := range cm.channels {
 		channels = append(channels, c.DeepCopy())
 	}
+	for _, c := range cm.quarantined {
+		channels = append(channels, c.DeepCopy())
+	}
+
+	seq := cm.saveSeq.Add(1)
 
 	// Save asynchronously to avoid holding cm.mu during disk I/O.
 	go func() {
+		cm.saveWriteMu.Lock()
+		defer cm.saveWriteMu.Unlock()
+		if seq != cm.saveSeq.Load() {
+			return // 已有更新的快照排队/落盘，跳过本份，防止旧数据覆盖新数据
+		}
 		if err := cm.saveFunc(channels); err != nil {
-			zap.L().Warn("Failed to save config", zap.Error(err))
+			zap.L().Error("Failed to save config (in-memory state may diverge from DB)",
+				zap.Error(err))
 		}
 	}()
 	return nil
+}
+
+// QuarantineChannel 将启动加载失败的通道放入隔离区：不参与运行，
+// 但保留在持久化视图中，防止下一次全量保存把它从 DB 里静默删除。
+func (cm *ChannelManager) QuarantineChannel(ch *model.Channel, reason string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	cm.quarantined[ch.ID] = ch.DeepCopy()
+	zap.L().Error("Channel quarantined: failed to load at startup, kept in persistence to prevent data loss",
+		zap.String("channel_id", ch.ID),
+		zap.String("channel_name", ch.Name),
+		zap.Int("devices", len(ch.Devices)),
+		zap.String("reason", reason))
+	_ = cm.saveChannels()
+}
+
+// QuarantinedChannels 返回当前隔离区通道（用于诊断/API 展示）。
+func (cm *ChannelManager) QuarantinedChannels() []model.Channel {
+	cm.mu.RLock()
+	defer cm.mu.RUnlock()
+	out := make([]model.Channel, 0, len(cm.quarantined))
+	for _, c := range cm.quarantined {
+		out = append(out, c.DeepCopy())
+	}
+	return out
+}
+
+// clearQuarantineLocked 解除指定通道的隔离（caller must hold cm.mu）。
+func (cm *ChannelManager) clearQuarantineLocked(channelID string) {
+	delete(cm.quarantined, channelID)
 }
 
 // getDeviceID extracts the BACnet device instance ID used for communication.
