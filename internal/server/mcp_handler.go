@@ -16,7 +16,6 @@ import (
 	"github.com/anviod/edgeCore/internal/model"
 	"github.com/gofiber/fiber/v2"
 	"go.uber.org/zap"
-	"gopkg.in/yaml.v3"
 )
 
 // ── MCP 会话管理（MCP 2025-11-25 Streamable HTTP）──
@@ -461,8 +460,7 @@ func (s *Server) registerMCPFullTools(mcpSrv *mcp.MCPServer) {
 		InputSchema: mcp.InputSchema{
 			Type: "object",
 			Properties: map[string]mcp.PropertyDef{
-				"format": {Type: "string", Description: "导出格式：json（默认）或 yaml"},
-				"scope":  {Type: "string", Description: "导出范围：all（全部），channels（仅通道），rules（仅规则），默认 all"},
+				"scope": {Type: "string", Description: "导出范围：all（全部），channels（仅通道），rules（仅规则），默认 all"},
 			},
 		},
 	}, s.mcpExportConfig)
@@ -1965,15 +1963,11 @@ func (s *Server) mcpExportConfig(args json.RawMessage) (*mcp.CallToolResult, err
 	}
 	var output string
 	var lang string
-	if params.Format == "yaml" || params.Format == "yml" {
-		exportYAML, err := yaml.Marshal(export)
+	{
+		exportBytes, err := json.MarshalIndent(export, "", "  ")
 		if err != nil {
-			return mcp.NewErrorResult("YAML 序列化失败: " + err.Error()), nil
+			return mcp.NewErrorResult("JSON 序列化失败: " + err.Error()), nil
 		}
-		output = string(exportYAML)
-		lang = "yaml"
-	} else {
-		exportBytes, _ := json.MarshalIndent(export, "", "  ")
 		output = string(exportBytes)
 		lang = "json"
 	}

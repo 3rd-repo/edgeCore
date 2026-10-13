@@ -15,41 +15,39 @@ var saveMu sync.Mutex
 
 // ConfigManager 管理配置的加载与持久化（运行时以数据库为唯一数据源）。
 type ConfigManager struct {
-	Config  *Config
-	ConfDir string
-	db      *bbolt.DB
-	useDB   bool
+	Config *Config
+	db     *bbolt.DB
+	useDB  bool
 }
 
 type Config struct {
 	Server struct {
-		Port     int    `yaml:"port"`
-		LogLevel string `yaml:"logLevel"`
-	} `yaml:"server"`
+		Port     int
+		LogLevel string
+	}
 	Storage struct {
-		Path string `yaml:"path"`
-	} `yaml:"storage"`
-	Northbound model.NorthboundConfig `yaml:"northbound"`
-	Channels   []model.Channel        `yaml:"channels"`
-	EdgeRules  []model.EdgeRule       `yaml:"edge_rules"`
-	System     model.SystemConfig     `yaml:"system"`
-	Users      []model.UserConfig     `yaml:"users"`
+		Path string
+	}
+	Northbound model.NorthboundConfig
+	Channels   []model.Channel
+	EdgeRules  []model.EdgeRule
+	System     model.SystemConfig
+	Users      []model.UserConfig
 }
 
 // NewConfigManagerWithEmptyConfig 创建一个使用默认空配置的配置管理器（用于安装前）
-func NewConfigManagerWithEmptyConfig(confDir string) *ConfigManager {
+func NewConfigManagerWithEmptyConfig() *ConfigManager {
 	cfg := DefaultConfig()
 
 	return &ConfigManager{
-		Config:  cfg,
-		ConfDir: confDir,
-		db:      nil,
-		useDB:   false,
+		Config: cfg,
+		db:     nil,
+		useDB:  false,
 	}
 }
 
 // NewConfigManagerWithDB 创建一个使用数据库存储配置的配置管理器
-func NewConfigManagerWithDB(confDir string, db *bbolt.DB) (*ConfigManager, error) {
+func NewConfigManagerWithDB(db *bbolt.DB) (*ConfigManager, error) {
 	configStore, err := storage.NewConfigStore(db)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config store: %w", err)
@@ -71,10 +69,9 @@ func NewConfigManagerWithDB(confDir string, db *bbolt.DB) (*ConfigManager, error
 	}
 
 	return &ConfigManager{
-		Config:  cfg,
-		ConfDir: confDir,
-		db:      db,
-		useDB:   true,
+		Config: cfg,
+		db:     db,
+		useDB:  true,
 	}, nil
 }
 
@@ -131,7 +128,8 @@ func (cm *ConfigManager) Reload() error {
 
 // SaveConfig 保存配置。
 // 迁移到数据库后，数据库为唯一数据源：useDB 时仅写入数据库，
-// 不再写回已废弃（可能已删除）的 conf/*.yaml，避免重建配置目录或写入失败。
+// 配置体系以数据库为唯一数据源（legacy YAML 配置已于 2026-10 移除），
+// 不再写回任何文件系统配置目录，避免重建配置目录或写入失败。
 func (cm *ConfigManager) SaveConfig(cfg *Config) error {
 	saveMu.Lock()
 	defer saveMu.Unlock()

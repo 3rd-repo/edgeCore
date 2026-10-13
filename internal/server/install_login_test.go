@@ -24,7 +24,7 @@ func newInstallTestServer(t *testing.T) (*Server, *core.SystemManager, string) {
 	tmpDir := testOutputDir(t)
 	dbPath := filepath.Join(tmpDir, "data")
 
-	cfgManager := config.NewConfigManagerWithEmptyConfig(tmpDir)
+	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	sm := core.NewSystemManager(cfg)
 
@@ -41,7 +41,7 @@ func newInstallTestServer(t *testing.T) (*Server, *core.SystemManager, string) {
 
 func TestInstallStorageAttachHook(t *testing.T) {
 	tmpDir := testOutputDir(t)
-	cfgManager := config.NewConfigManagerWithEmptyConfig(tmpDir)
+	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	sm := core.NewSystemManager(cfg)
 

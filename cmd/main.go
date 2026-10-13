@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"flag"
 	"net/http"
 	_ "net/http/pprof"
 	"os"
@@ -62,8 +61,6 @@ func startPprof() func() {
 
 func main() {
 	// Parse command-line flags
-	confDir := flag.String("conf", "conf", "Path to legacy YAML config for one-time migration")
-	flag.Parse()
 
 	// Create LogBroadcaster
 	logBroadcaster := logger.NewLogBroadcaster()
@@ -115,7 +112,7 @@ func main() {
 		}
 
 		zap.L().Info("Loading configuration from database...")
-		cfgManager, err = config.NewConfigManagerWithDB(*confDir, store.GetConfigDB())
+		cfgManager, err = config.NewConfigManagerWithDB(store.GetConfigDB())
 		if err != nil {
 			zap.L().Fatal("Failed to load config with DB", zap.Error(err))
 		}
@@ -123,7 +120,7 @@ func main() {
 		zap.L().Info("Configuration loaded successfully from database")
 	} else {
 		zap.L().Info("config.db not found, starting with default empty config (install mode)")
-		cfgManager = config.NewConfigManagerWithEmptyConfig(*confDir)
+		cfgManager = config.NewConfigManagerWithEmptyConfig()
 		cfg = cfgManager.GetConfig()
 		runtimeReady = false
 		zap.L().Info("Default config loaded for installation")

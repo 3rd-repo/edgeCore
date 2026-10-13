@@ -70,8 +70,6 @@ nfpms:
         type: config
       - src: ./edgeCore.sh
         dst: /usr/local/bin/edgeCore/edgeCore.sh
-      - src: ./conf
-        dst: /usr/local/bin/edgeCore/conf
         type: tree
       - src: ./ui/dist
         dst: /usr/local/bin/edgeCore/ui/dist

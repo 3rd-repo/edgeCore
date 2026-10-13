@@ -121,7 +121,7 @@ func TestHandleGetNonce(t *testing.T) {
 
 func TestHandleGetSystemInfo(t *testing.T) {
 	tmpDir := testOutputDir(t)
-	cfgManager := config.NewConfigManagerWithEmptyConfig(tmpDir)
+	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	sm := core.NewSystemManager(cfg)
 
@@ -140,7 +140,7 @@ func TestHandleGetSystemInfo(t *testing.T) {
 
 func TestHandleLogin_LocalDebugMode(t *testing.T) {
 	tmpDir := testOutputDir(t)
-	cfgManager := config.NewConfigManagerWithEmptyConfig(tmpDir)
+	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	cfg.Users = []model.UserConfig{
 		{Username: "admin", Password: "Admin@12345", Role: "admin"},
@@ -173,7 +173,7 @@ func TestHandleLogin_LocalDebugMode(t *testing.T) {
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
 	tmpDir := testOutputDir(t)
-	cfgManager := config.NewConfigManagerWithEmptyConfig(tmpDir)
+	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	cfg.Users = []model.UserConfig{
 		{Username: "admin", Password: "Admin@12345", Role: "admin"},
@@ -216,7 +216,7 @@ func TestHandleLogout(t *testing.T) {
 
 func TestHandleChangePassword_InvalidNonce(t *testing.T) {
 	tmpDir := testOutputDir(t)
-	cfgManager := config.NewConfigManagerWithEmptyConfig(tmpDir)
+	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	cfg.Users = []model.UserConfig{
 		{Username: "admin", Password: "Admin@12345", Role: "admin"},

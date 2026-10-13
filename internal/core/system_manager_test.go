@@ -18,7 +18,7 @@ func attachTestConfigManager(t *testing.T, sm *SystemManager, cfg *config.Config
 	}
 	t.Cleanup(func() { store.Close() })
 
-	cfgMgr, err := config.NewConfigManagerWithDB(tmpDir, store.GetConfigDB())
+	cfgMgr, err := config.NewConfigManagerWithDB(store.GetConfigDB())
 	if err != nil {
 		t.Fatalf("config manager: %v", err)
 	}

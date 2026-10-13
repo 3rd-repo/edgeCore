@@ -34,8 +34,7 @@ func newDBConfigManager(t *testing.T) (*ConfigManager, func()) {
 	if err != nil {
 		t.Fatalf("NewStorage failed: %v", err)
 	}
-	confDir := filepath.Join(tempDir, "conf")
-	cm, err := NewConfigManagerWithDB(confDir, store.GetConfigDB())
+	cm, err := NewConfigManagerWithDB(store.GetConfigDB())
 	if err != nil {
 		store.Close()
 		t.Fatalf("NewConfigManagerWithDB failed: %v", err)
