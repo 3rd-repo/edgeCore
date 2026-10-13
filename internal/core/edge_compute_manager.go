@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/anviod/edgeCore/internal/model"
 	"github.com/anviod/edgeCore/internal/storage"
 
@@ -197,7 +199,11 @@ func (em *EdgeComputeManager) incRulesDebounced(n int64) {
 
 func (em *EdgeComputeManager) dispatchTask(task *ruleTask) {
 	defer func() {
-		_ = recover()
+		if r := recover(); r != nil {
+			// P2 加固（2026-10-13 审查）：此前 `_ = recover()` 完全静默，
+			// 规则分发 panic 无迹可查。
+			log.Printf("[edge-compute] recovered from panic in dispatchTask (rule=%s): %v", task.rule.ID, r)
+		}
 	}()
 	if em.closed.Load() {
 		return
@@ -317,6 +323,22 @@ func (em *EdgeComputeManager) LoadRules(rules []model.EdgeRule) {
 	}
 	em.rebuildIndex()
 	//log.Printf("Loaded %d edge computing rules", len(rules))
+}
+
+// ReloadRules 用导入的规则集整体替换内存规则（ConfigManager.Reload 回调触发）。
+// 与 LoadRules（增量叠加）不同：导入场景下 DB 里的规则集已是权威状态，
+// 内存旧规则若不清除，下一次 persist() 会把变更前的旧规则整体写回 DB，
+// 静默回滚刚导入的规则（P0 数据丢失）。
+func (em *EdgeComputeManager) ReloadRules(rules []model.EdgeRule) {
+	em.mu.Lock()
+	defer em.mu.Unlock()
+	em.rules = make(map[string]model.EdgeRule, len(rules))
+	for _, r := range rules {
+		em.rules[r.ID] = r
+	}
+	em.rebuildIndex()
+	zap.L().Info("Edge compute rules reloaded from imported config",
+		zap.Int("rules", len(rules)))
 }
 
 func (em *EdgeComputeManager) Start() {
@@ -1490,7 +1512,11 @@ func (em *EdgeComputeManager) processFailedActions() {
 				_ = store.DeleteData("DataCache", fa.ID)
 				log.Printf("Max retries reached for action %s, dropping", fa.ID)
 			} else {
-				_ = store.SaveData("DataCache", fa.ID, fa)
+				// P2 加固：此前 `_ =` 吞错——重试元数据写丢后该动作既不再
+				// 重试也无法追溯。至少记录错误。
+				if serr := store.SaveData("DataCache", fa.ID, fa); serr != nil {
+					log.Printf("[edge-compute] failed to persist retry state for action %s (retry chain may break): %v", fa.ID, serr)
+				}
 			}
 		}
 	}
@@ -2148,7 +2174,11 @@ func (em *EdgeComputeManager) saveWindowData(ruleID string) {
 	em.stateMu.RUnlock()
 
 	if ok {
-		store.SaveData(storage.BucketWindow, ruleID, data)
+		// P2 加固（2026-10-13 审查）：此前返回值完全丢弃，窗口数据写失败
+		// 无任何记录，重启后滑动窗口为空且无人知晓。
+		if err := store.SaveData(storage.BucketWindow, ruleID, data); err != nil {
+			log.Printf("[edge-compute] failed to save window data for %s (window will reset after restart): %v", ruleID, err)
+		}
 	}
 }
 

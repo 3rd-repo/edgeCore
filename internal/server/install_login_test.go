@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"io"
 	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -41,6 +42,7 @@ func newInstallTestServer(t *testing.T) (*Server, *core.SystemManager, string) {
 
 func TestInstallStorageAttachHook(t *testing.T) {
 	tmpDir := testOutputDir(t)
+	defer os.RemoveAll(tmpDir) // 隔离目录清理 + 消除 unused
 	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	sm := core.NewSystemManager(cfg)

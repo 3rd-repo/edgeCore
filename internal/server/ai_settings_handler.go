@@ -70,10 +70,10 @@ func mergeAiSettingsDefaults(in model.AICopilotSettings) model.AICopilotSettings
 func (s *Server) saveAiCopilotSettings(settings model.AICopilotSettings) error {
 	cs, err := s.getConfigStore()
 	if err != nil {
-		// Database unavailable — fallback to in-memory only
-		cp := settings
-		s.aiSettingsMem = &cp
-		return nil
+		// P1-13 防护（2026-10-13 审查）：此前 DB 不可用时静默降级为仅内存并
+		// 返回成功——用户以为已保存，重启后 API Key/MCP 配置全部消失且无提示。
+		// 现在如实返回错误，由 API 层返回 500。
+		return fmt.Errorf("database unavailable, AI settings not persisted: %w", err)
 	}
 	if err := cs.SaveAICopilotSettings(settings); err != nil {
 		return err

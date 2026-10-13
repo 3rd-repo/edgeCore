@@ -331,14 +331,18 @@ func FetchRemoteConfigArchive(host string, port int, token string, useHTTPS bool
 	return body, source, nil
 }
 
-// PullRemoteConfigAndImport force-pulls configuration from a remote gateway and overwrites local config.
-func (s *Storage) PullRemoteConfigAndImport(host string, port int, token string, useHTTPS bool) (*ConfigImportResult, error) {
+// PullRemoteConfigAndImport 从远程网关拉取配置并导入本地。
+// P1-17 防护（2026-10-13 审查）：此前硬编码 ForceOverwrite=true——远端的
+// 用户账号/密码与 System（含网络）配置直接覆盖本地，无任何开关与确认。
+// 现在默认保留本地用户与端口（与 import-config-db 一致），仅当调用方显式
+// overwriteUsers=true 才整体覆盖。
+func (s *Storage) PullRemoteConfigAndImport(host string, port int, token string, useHTTPS, overwriteUsers bool) (*ConfigImportResult, error) {
 	archiveData, source, err := FetchRemoteConfigArchive(host, port, token, useHTTPS)
 	if err != nil {
 		return nil, err
 	}
 
-	result, err := s.ImportConfigDBArchive(archiveData, ImportArchiveOptions{ForceOverwrite: true})
+	result, err := s.ImportConfigDBArchive(archiveData, ImportArchiveOptions{ForceOverwrite: overwriteUsers})
 	if err != nil {
 		return nil, err
 	}

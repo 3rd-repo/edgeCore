@@ -7,17 +7,39 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/anviod/edgeCore/internal/model"
 
 	"go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 type Storage struct {
 	configDB  *bbolt.DB
 	runtimeDB *bbolt.DB
+	// runtimeMu 保护 runtimeDB 句柄的换绑（compact 关库→换文件→重开）。
+	// 读路径持 RLock 执行事务，compact 持 Lock 完成换绑：换绑窗口内的
+	// 写入会短暂阻塞而不是拿到 "database not open" 被上层吞掉
+	// （P0 数据丢失防护，2026-10-13 审查）。
+	runtimeMu sync.RWMutex
+	// compactMu 串行化 compact（定时循环与手动 API 可能并发触发）。
+	compactMu sync.Mutex
 	dataDir   string
+}
+
+// runtimeUpdate / runtimeView：RLock 保护下的 runtime.db 事务。
+func (s *Storage) runtimeUpdate(fn func(tx *bbolt.Tx) error) error {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return s.runtimeDB.Update(fn)
+}
+
+func (s *Storage) runtimeView(fn func(tx *bbolt.Tx) error) error {
+	s.runtimeMu.RLock()
+	defer s.runtimeMu.RUnlock()
+	return s.runtimeDB.View(fn)
 }
 
 func (s *Storage) GetPath() string {
@@ -49,7 +71,7 @@ func (s *Storage) getDBByBucket(bucketName string) *bbolt.DB {
 }
 
 func (s *Storage) SaveOfflineMessage(configID string, data []byte, maxCount int) error {
-	return s.runtimeDB.Update(func(tx *bbolt.Tx) error {
+	return s.runtimeUpdate(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(BucketNorthboundCache))
 		if b == nil {
 			return fmt.Errorf("bucket %s not found", BucketNorthboundCache)
@@ -93,7 +115,7 @@ func (s *Storage) SaveOfflineMessage(configID string, data []byte, maxCount int)
 
 func (s *Storage) GetOfflineMessages(configID string, limit int) ([]OfflineMessage, error) {
 	var messages []OfflineMessage
-	err := s.runtimeDB.View(func(tx *bbolt.Tx) error {
+	err := s.runtimeView(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(BucketNorthboundCache))
 		if b == nil {
 			return nil
@@ -120,7 +142,7 @@ func (s *Storage) GetOfflineMessages(configID string, limit int) ([]OfflineMessa
 }
 
 func (s *Storage) RemoveOfflineMessage(key string) error {
-	return s.runtimeDB.Update(func(tx *bbolt.Tx) error {
+	return s.runtimeUpdate(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(BucketNorthboundCache))
 		if b == nil {
 			return nil
@@ -213,6 +235,18 @@ func NewStorage(dataDir string) (*Storage, error) {
 	}
 
 	// 打开运行时数据库（允许清理、compact、重建）
+	// P0 自愈（2026-10-13 审查）：CompactRuntimeDB 的两步 rename 之间若进程
+	// 崩溃/断电，runtime.db 会缺失但 .pre-compact.bak 完整存在——此时必须恢复，
+	// 否则网关 Fatal 无限重启（数据明明还在磁盘上）。
+	if _, statErr := os.Stat(runtimePath); os.IsNotExist(statErr) {
+		backupPath := runtimePath + ".pre-compact.bak"
+		if _, bakErr := os.Stat(backupPath); bakErr == nil {
+			if renameErr := os.Rename(backupPath, runtimePath); renameErr == nil {
+				zap.L().Warn("runtime.db missing after interrupted compact, restored from .pre-compact.bak",
+					zap.String("path", runtimePath))
+			}
+		}
+	}
 	runtimeDB, err := openBoltDB(runtimePath, true)
 	if err != nil {
 		configDB.Close()
@@ -250,7 +284,9 @@ func NewStorage(dataDir string) (*Storage, error) {
 
 func (s *Storage) Close() error {
 	err1 := s.configDB.Close()
+	s.runtimeMu.Lock()
 	err2 := s.runtimeDB.Close()
+	s.runtimeMu.Unlock()
 	if err1 != nil {
 		return err1
 	}
@@ -258,6 +294,19 @@ func (s *Storage) Close() error {
 }
 
 func (s *Storage) SaveData(bucketName string, key string, data interface{}) error {
+	if !IsConfigBucket(bucketName) {
+		return s.runtimeUpdate(func(tx *bbolt.Tx) error {
+			b, err := tx.CreateBucketIfNotExists([]byte(bucketName))
+			if err != nil {
+				return err
+			}
+			bytes, err := json.Marshal(data)
+			if err != nil {
+				return err
+			}
+			return b.Put([]byte(key), bytes)
+		})
+	}
 	db := s.getDBByBucket(bucketName)
 	return db.Update(func(tx *bbolt.Tx) error {
 		b, err := tx.CreateBucketIfNotExists([]byte(bucketName))
@@ -273,6 +322,19 @@ func (s *Storage) SaveData(bucketName string, key string, data interface{}) erro
 }
 
 func (s *Storage) GetData(bucketName string, key string, result interface{}) error {
+	if !IsConfigBucket(bucketName) {
+		return s.runtimeView(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(bucketName))
+			if b == nil {
+				return fmt.Errorf("bucket %s not found", bucketName)
+			}
+			data := b.Get([]byte(key))
+			if data == nil {
+				return fmt.Errorf("key %s not found in bucket %s", key, bucketName)
+			}
+			return json.Unmarshal(data, result)
+		})
+	}
 	db := s.getDBByBucket(bucketName)
 	return db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
@@ -350,6 +412,15 @@ func (s *Storage) LoadLatest(bucketName string, limit int, callback func(k, v []
 }
 
 func (s *Storage) LoadAll(bucketName string, callback func(k, v []byte) error) error {
+	if !IsConfigBucket(bucketName) {
+		return s.runtimeView(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(bucketName))
+			if b == nil {
+				return nil
+			}
+			return b.ForEach(callback)
+		})
+	}
 	db := s.getDBByBucket(bucketName)
 	return db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
@@ -361,6 +432,21 @@ func (s *Storage) LoadAll(bucketName string, callback func(k, v []byte) error) e
 }
 
 func (s *Storage) LoadRange(bucketName string, minKey, maxKey string, callback func(k, v []byte) error) error {
+	if !IsConfigBucket(bucketName) {
+		return s.runtimeView(func(tx *bbolt.Tx) error {
+			b := tx.Bucket([]byte(bucketName))
+			if b == nil {
+				return nil
+			}
+			c := b.Cursor()
+			for k, v := c.Seek([]byte(minKey)); k != nil && string(k) <= maxKey; k, v = c.Next() {
+				if err := callback(k, v); err != nil {
+					return err
+				}
+			}
+			return nil
+		})
+	}
 	db := s.getDBByBucket(bucketName)
 	return db.View(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
@@ -378,7 +464,7 @@ func (s *Storage) LoadRange(bucketName string, minKey, maxKey string, callback f
 }
 
 func (s *Storage) SaveValue(val model.Value) error {
-	return s.runtimeDB.Update(func(tx *bbolt.Tx) error {
+	return s.runtimeUpdate(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(BucketValues))
 
 		data, err := json.Marshal(val)
@@ -392,7 +478,7 @@ func (s *Storage) SaveValue(val model.Value) error {
 
 func (s *Storage) GetLastValue(pointID string) (*model.Value, error) {
 	var val model.Value
-	err := s.runtimeDB.View(func(tx *bbolt.Tx) error {
+	err := s.runtimeView(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(BucketValues))
 		data := b.Get([]byte(pointID))
 		if data == nil {
@@ -405,7 +491,7 @@ func (s *Storage) GetLastValue(pointID string) (*model.Value, error) {
 
 func (s *Storage) GetAllValues() (map[string]model.Value, error) {
 	result := make(map[string]model.Value)
-	err := s.runtimeDB.View(func(tx *bbolt.Tx) error {
+	err := s.runtimeView(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(BucketValues))
 		return b.ForEach(func(k, v []byte) error {
 			var val model.Value
@@ -492,7 +578,7 @@ func classifyBucket(name string) (category string, clearable bool) {
 // dropLegacyShadowWALBucket removes the obsolete ShadowCore WAL bucket.
 // Shadow devices are memory-only; leftover data is reclaimed after CompactRuntimeDB.
 func (s *Storage) dropLegacyShadowWALBucket() error {
-	return s.runtimeDB.Update(func(tx *bbolt.Tx) error {
+	return s.runtimeUpdate(func(tx *bbolt.Tx) error {
 		if tx.Bucket([]byte(legacyShadowWALBucket)) == nil {
 			return nil
 		}
@@ -545,7 +631,7 @@ func (s *Storage) GetBucketStats() ([]BucketStats, int64, error) {
 		return nil, 0, err
 	}
 
-	err = s.runtimeDB.View(func(tx *bbolt.Tx) error {
+	err = s.runtimeView(func(tx *bbolt.Tx) error {
 		return tx.ForEach(func(name []byte, b *bbolt.Bucket) error {
 			count := 0
 			size := int64(0)
@@ -613,7 +699,7 @@ func (s *Storage) ClearBucket(bucketName string) error {
 	if IsConfigBucket(bucketName) {
 		return fmt.Errorf("config bucket %s cannot be cleared", bucketName)
 	}
-	return s.runtimeDB.Update(func(tx *bbolt.Tx) error {
+	return s.runtimeUpdate(func(tx *bbolt.Tx) error {
 		b := tx.Bucket([]byte(bucketName))
 		if b == nil {
 			return fmt.Errorf("bucket %s not found", bucketName)
@@ -634,7 +720,7 @@ func (s *Storage) ClearBucket(bucketName string) error {
 func (s *Storage) ClearAllRuntimeBuckets() ([]string, error) {
 	var cleared []string
 
-	err := s.runtimeDB.Update(func(tx *bbolt.Tx) error {
+	err := s.runtimeUpdate(func(tx *bbolt.Tx) error {
 		var bucketNames []string
 		if err := tx.ForEach(func(name []byte, _ *bbolt.Bucket) error {
 			bucketNames = append(bucketNames, string(name))
@@ -677,80 +763,60 @@ func (s *Storage) ClearAllRuntimeBuckets() ([]string, error) {
 const compactTxMaxSize = 65536 // matches bbolt CLI default; avoids OOM during large compacts
 
 // CompactRuntimeDB 压缩运行时数据库文件，回收已删除数据的空间。
-// 使用 bbolt.Compact 仅复制仍存活的数据，替换原文件。
+// P0 数据丢失防护（2026-10-13 审查）重构：
+//   - 压缩源直接使用存活的 runtimeDB 句柄（bbolt.Compact 只开读事务，
+//     与写事务互不阻塞）——不再先关库再做整个压缩，把"database not open"
+//     的丢数据窗口从秒级缩到毫秒级；
+//   - 关库→换文件→重开的毫秒级窗口内持有 runtimeMu 写锁，数据面写入
+//     短暂排队而不是报错被吞；
+//   - 两步 rename 之间进程崩溃会在磁盘上留下 .pre-compact.bak，
+//     NewStorage 启动时检测并自愈恢复。
 func (s *Storage) CompactRuntimeDB() error {
-	runtimePath := s.runtimeDB.Path()
+	s.compactMu.Lock()
+	defer s.compactMu.Unlock()
 
-	if err := s.runtimeDB.Close(); err != nil {
-		return fmt.Errorf("failed to close runtime db: %w", err)
-	}
+	// 快照当前句柄（reopenRuntimeDB 换绑期间指针竞态防护）
+	s.runtimeMu.RLock()
+	srcDB := s.runtimeDB
+	s.runtimeMu.RUnlock()
 
+	runtimePath := srcDB.Path()
 	tmpPath := runtimePath + ".compact.tmp"
 	_ = os.Remove(tmpPath)
 
-	src, err := bbolt.Open(runtimePath, 0600, &bbolt.Options{
-		Timeout:  boltOpenTimeout,
-		ReadOnly: true,
-	})
-	if err != nil {
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("failed to open runtime db for compact: %w (reopen: %v)", err, reopenErr)
-		}
-		return fmt.Errorf("failed to open runtime db for compact: %w", err)
-	}
-
 	dst, err := openBoltDB(tmpPath, true)
 	if err != nil {
-		_ = src.Close()
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("failed to create compact temp db: %w (reopen: %v)", err, reopenErr)
-		}
 		return fmt.Errorf("failed to create compact temp db: %w", err)
 	}
 
-	if err := bbolt.Compact(dst, src, compactTxMaxSize); err != nil {
+	if err := bbolt.Compact(dst, srcDB, compactTxMaxSize); err != nil {
 		_ = dst.Close()
-		_ = src.Close()
 		_ = os.Remove(tmpPath)
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("failed to compact runtime db: %w (reopen: %v)", err, reopenErr)
-		}
 		return fmt.Errorf("failed to compact runtime db: %w", err)
 	}
-
 	if err := dst.Close(); err != nil {
-		_ = src.Close()
 		_ = os.Remove(tmpPath)
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("failed to close compact temp db: %w (reopen: %v)", err, reopenErr)
-		}
 		return fmt.Errorf("failed to close compact temp db: %w", err)
-	}
-	if err := src.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("failed to close runtime db source: %w (reopen: %v)", err, reopenErr)
-		}
-		return fmt.Errorf("failed to close runtime db source: %w", err)
 	}
 
 	tmpInfo, err := os.Stat(tmpPath)
 	if err != nil {
 		_ = os.Remove(tmpPath)
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("failed to stat compacted file: %w (reopen: %v)", err, reopenErr)
-		}
 		return fmt.Errorf("failed to stat compacted file: %w", err)
 	}
 	if tmpInfo.Size() == 0 {
 		_ = os.Remove(tmpPath)
-		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
-			return fmt.Errorf("compacted file is empty, aborting (reopen: %v)", reopenErr)
-		}
 		return fmt.Errorf("compacted file is empty, aborting")
 	}
 
+	// 毫秒级换绑窗口：写入在 runtimeMu 上排队，不丢数据
 	backupPath := runtimePath + ".pre-compact.bak"
+	s.runtimeMu.Lock()
+	defer s.runtimeMu.Unlock()
+
+	if err := s.runtimeDB.Close(); err != nil {
+		return fmt.Errorf("failed to close runtime db: %w", err)
+	}
 	if err := os.Rename(runtimePath, backupPath); err != nil {
 		_ = os.Remove(tmpPath)
 		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
@@ -758,7 +824,6 @@ func (s *Storage) CompactRuntimeDB() error {
 		}
 		return fmt.Errorf("failed to backup original runtime db: %w", err)
 	}
-
 	if err := os.Rename(tmpPath, runtimePath); err != nil {
 		_ = os.Rename(backupPath, runtimePath)
 		if reopenErr := s.reopenRuntimeDB(runtimePath); reopenErr != nil {
@@ -766,7 +831,6 @@ func (s *Storage) CompactRuntimeDB() error {
 		}
 		return fmt.Errorf("failed to replace runtime db with compacted file: %w", err)
 	}
-
 	if err := s.reopenRuntimeDB(runtimePath); err != nil {
 		return fmt.Errorf("failed to reopen compacted runtime db: %w", err)
 	}

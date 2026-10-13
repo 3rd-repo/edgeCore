@@ -13,7 +13,25 @@ func writeSystemConfigFile(path, content string) error {
 		return err
 	}
 	tmp := path + ".edgeCore.tmp"
-	if err := os.WriteFile(tmp, []byte(content), 0o644); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o644)
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	// P2 加固（2026-10-13 审查）：netplan/ifupdown/systemd 是网关现场唯一生效的
+	// 网络配置，断电时 rename 已生效而数据仍在 page cache 会导致设备以错误
+	// （或无）IP 启动、远程失联。tmp 落盘 fsync 后再 rename。
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
 		return err
 	}
 	return os.Rename(tmp, path)

@@ -20,6 +20,32 @@ func certStoreDir(channelID string) string {
 	return filepath.Join("data", "certs", "opcua", id)
 }
 
+// writeFileAtomic 原子写文件：tmp + fsync + rename。
+// P2 加固（2026-10-13 审查）：此前直接 os.WriteFile，断电可致磁盘上证书/私钥
+// 截断。rename 只保证命名原子性，不保证内容落盘，故 tmp 先 fsync。
+func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
+	tmp := path + ".tmp"
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, perm)
+	if err != nil {
+		return err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Sync(); err != nil {
+		f.Close()
+		os.Remove(tmp)
+		return err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 // MaterializeServerCerts writes DB-stored PEM to disk, or returns legacy file paths.
 func MaterializeServerCerts(cfg model.OPCUAConfig) (certFile, keyFile string, err error) {
 	certPEM := strings.TrimSpace(cfg.ServerCertPEM)
@@ -34,10 +60,10 @@ func MaterializeServerCerts(cfg model.OPCUAConfig) (certFile, keyFile string, er
 		}
 		certPath := filepath.Join(dir, "server.crt")
 		keyPath := filepath.Join(dir, "server.key")
-		if err := os.WriteFile(certPath, []byte(normalizePEM(certPEM)), 0o600); err != nil {
+		if err := writeFileAtomic(certPath, []byte(normalizePEM(certPEM)), 0o600); err != nil {
 			return "", "", err
 		}
-		if err := os.WriteFile(keyPath, []byte(normalizePEM(keyPEM)), 0o600); err != nil {
+		if err := writeFileAtomic(keyPath, []byte(normalizePEM(keyPEM)), 0o600); err != nil {
 			return "", "", err
 		}
 		return certPath, keyPath, nil

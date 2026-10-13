@@ -275,6 +275,8 @@ func (c *Client) flushPeriodic(deviceID string, item *periodicItem) {
 	}
 
 	if c.client == nil || !c.client.IsConnected() {
+		// 断连：落盘兜底而不是静默丢弃（P0 数据丢失防护）
+		c.cacheOfflinePayload(data)
 		return
 	}
 
@@ -287,6 +289,8 @@ func (c *Client) flushPeriodic(deviceID string, item *periodicItem) {
 	token := c.client.Publish(topic, 0, false, data)
 	go func() {
 		if token.Wait() && token.Error() != nil {
+			// 发布失败：落盘兜底，等待重连后重放
+			c.cacheOfflinePayload(data)
 			atomic.AddInt64(&c.failCount, 1)
 			zap.L().Error("Failed to publish to MQTT",
 				zap.Error(token.Error()),
@@ -425,6 +429,9 @@ func (c *Client) connectLoop() {
 		)
 		c.setStatus(StatusConnected)
 		atomic.StoreInt64(&c.lastOnlineTime, time.Now().UnixMilli())
+
+		// 重连成功：重放离线期间缓存的遥测载荷（P0 数据丢失防护）
+		go c.flushOfflineMessages()
 
 		// Publish Online Status
 		// Re-evaluate statusTopic here in case config changed (though config update restarts client)
@@ -718,7 +725,11 @@ func (c *Client) Publish(v model.Value) {
 	enable := c.config.Enable
 	c.configMu.RUnlock()
 
-	if !enable || c.client == nil || !c.client.IsConnected() {
+	// P0 数据丢失防护（2026-10-13 审查）：
+	// 此前断连时在这里直接 return——主遥测路径 100% 静默丢弃，
+	// 离线缓存（SaveOfflineMessage）只接了 PublishRaw/HTTP 没接这里。
+	// 现在断连时仍进入聚合缓冲，由 flushDevice 统一落盘兜底。
+	if !enable {
 		return
 	}
 
@@ -810,6 +821,8 @@ func (c *Client) flushDevice(deviceID string) {
 	}
 
 	if c.client == nil || !c.client.IsConnected() {
+		// 断连：落盘兜底而不是静默丢弃（P0 数据丢失防护）
+		c.cacheOfflinePayload(data)
 		return
 	}
 
@@ -822,6 +835,8 @@ func (c *Client) flushDevice(deviceID string) {
 	token := c.client.Publish(topic, 0, false, data)
 	go func() {
 		if token.Wait() && token.Error() != nil {
+			// 发布失败：落盘兜底，等待重连后重放
+			c.cacheOfflinePayload(data)
 			atomic.AddInt64(&c.failCount, 1)
 			zap.L().Error("Failed to publish to MQTT",
 				zap.Error(token.Error()),
@@ -840,6 +855,41 @@ func (c *Client) flushDevice(deviceID string) {
 }
 
 // PublishDeviceStatus publishes device online/offline status
+// cacheOfflinePayload 断连/发布失败时的落盘兜底（P0 数据丢失防护，2026-10-13）。
+// 对齐 PublishRaw 与 HTTP 客户端的既有行为：Cache 启用时写入 bbolt 离线缓存，
+// 重连后由 flushOfflineMessages（client_ext.go，retryLoop 周期重放）重放；
+// 未启用 Cache 时至少计数与告警。
+func (c *Client) cacheOfflinePayload(data []byte) {
+	c.configMu.RLock()
+	cacheCfg := c.config.Cache
+	configID := c.config.ID
+	c.configMu.RUnlock()
+
+	if !cacheCfg.Enable || c.storage == nil {
+		atomic.AddInt64(&c.failCount, 1)
+		zap.L().Warn("MQTT payload dropped while offline (cache disabled)",
+			zap.String("client_id", configID),
+			zap.Int("bytes", len(data)),
+			zap.String("component", "mqtt-client"),
+		)
+		return
+	}
+	if err := c.storage.SaveOfflineMessage(configID, data, cacheCfg.MaxCount); err != nil {
+		atomic.AddInt64(&c.failCount, 1)
+		zap.L().Error("Failed to cache offline MQTT payload (data lost)",
+			zap.String("client_id", configID),
+			zap.Error(err),
+			zap.String("component", "mqtt-client"),
+		)
+		return
+	}
+	zap.L().Info("MQTT payload cached while offline",
+		zap.String("client_id", configID),
+		zap.Int("bytes", len(data)),
+		zap.String("component", "mqtt-client"),
+	)
+}
+
 func (c *Client) PublishDeviceStatus(deviceID string, status int) {
 	// Check if client is enabled
 	c.configMu.RLock()

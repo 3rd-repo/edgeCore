@@ -101,7 +101,21 @@ func (s *Server) checkConnectivity(c *fiber.Ctx) error {
 }
 
 func (s *Server) handleRestart(c *fiber.Ctx) error {
-	// Execute restart in a separate goroutine to allow the response to return
+	// P0 数据丢失防护（2026-10-13 审查）：
+	// 此前这里 os.Exit(0) 硬退出，跳过 pipeline 最终 drain、MQTT flush、
+	// ShadowIngress flushBuffer、store.Close 全部 defer，缓冲数据全部丢失。
+	// 现在通知 main 的统一关停路径（与 SIGTERM 完全一致），响应先返回。
+	if s.restartSignal != nil {
+		go func() {
+			time.Sleep(1 * time.Second) // 让 HTTP 响应先送达
+			select {
+			case s.restartSignal <- struct{}{}:
+			default:
+			}
+		}()
+		return c.JSON(fiber.Map{"status": "success", "message": "System is restarting..."})
+	}
+	// 无回调接线（单测等场景）：退回旧行为，但至少同步执行已注册的清理
 	go func() {
 		time.Sleep(1 * time.Second)
 		os.Exit(0)

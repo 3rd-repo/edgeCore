@@ -230,6 +230,22 @@ func main() {
 	sm := core.NewSystemManager(cfg)
 	sm.SetConfigManager(cfgManager)
 
+	// P0 数据丢失防护（2026-10-13 审查）：导入/恢复后 Reload 只替换 cfgManager.Config，
+	// 各持有旧引用/旧快照的组件必须重新挂载，否则下一次全量保存会把
+	// 刚导入的配置整体回滚覆盖。导入后的 DB 状态是权威状态。
+	cfgManager.OnReload(func(newCfg *config.Config) {
+		sm.SetConfig(newCfg)
+		nbm.UpdateConfig(newCfg.Northbound)
+		ecm.ReloadRules(newCfg.EdgeRules)
+		if vsm != nil {
+			if configs, err := cfgManager.LoadVirtualShadows(); err == nil {
+				vsm.Load(configs)
+			} else {
+				zap.L().Warn("Failed to reload virtual shadows after config import", zap.Error(err))
+			}
+		}
+	})
+
 	for _, ch := range cfg.Channels {
 		for _, dev := range ch.Devices {
 			dsm.UpdateDeviceConfig(dev.ID, dev.Storage)
@@ -254,6 +270,10 @@ func main() {
 			vsm.Load(configs)
 		} else {
 			zap.L().Warn("Failed to load virtual shadows", zap.Error(err))
+			// P1-5 防护：加载失败后 persist 会用"只含新条目"的列表整体覆盖
+			// DB 单 key blob，原有全部影子配置将被静默清空。置位守卫，
+			// 拒绝覆盖直到 Load 成功。
+			vsm.MarkLoadFailed()
 		}
 		srv.SetVirtualShadowManager(vsm)
 		nbm.SetVirtualShadowManager(vsm)
@@ -326,6 +346,12 @@ func main() {
 	}
 	srv.SetRuntimeStartHook(startDataPlaneOnce)
 
+	// P0 数据丢失防护（2026-10-13 审查）：Web 重启端点改走与 SIGTERM
+	// 完全相同的优雅关停路径（pipeline 最终 drain → MQTT/影子 flush → store.Close），
+	// 不再 os.Exit(0) 硬退出。
+	restartChan := make(chan struct{}, 1)
+	srv.SetRestartSignal(restartChan)
+
 	pipeline.Start()
 	stopPprof := startPprof()
 	defer stopPprof()
@@ -354,7 +380,11 @@ func main() {
 	// 7. Wait for shutdown signal
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
-	<-sigChan
+	select {
+	case <-sigChan:
+	case <-restartChan:
+		zap.L().Info("Restart requested via web API, performing graceful shutdown")
+	}
 
 	zap.L().Info("Shutting down...")
 

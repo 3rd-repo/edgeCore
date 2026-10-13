@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -121,6 +122,7 @@ func TestHandleGetNonce(t *testing.T) {
 
 func TestHandleGetSystemInfo(t *testing.T) {
 	tmpDir := testOutputDir(t)
+	defer os.RemoveAll(tmpDir) // 保持隔离目录语义并消除 unused 声明
 	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	sm := core.NewSystemManager(cfg)
@@ -140,6 +142,7 @@ func TestHandleGetSystemInfo(t *testing.T) {
 
 func TestHandleLogin_LocalDebugMode(t *testing.T) {
 	tmpDir := testOutputDir(t)
+	defer os.RemoveAll(tmpDir) // 隔离目录清理 + 消除 unused
 	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	cfg.Users = []model.UserConfig{
@@ -173,6 +176,7 @@ func TestHandleLogin_LocalDebugMode(t *testing.T) {
 
 func TestHandleLogin_WrongPassword(t *testing.T) {
 	tmpDir := testOutputDir(t)
+	defer os.RemoveAll(tmpDir) // 隔离目录清理 + 消除 unused
 	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	cfg.Users = []model.UserConfig{
@@ -216,6 +220,7 @@ func TestHandleLogout(t *testing.T) {
 
 func TestHandleChangePassword_InvalidNonce(t *testing.T) {
 	tmpDir := testOutputDir(t)
+	defer os.RemoveAll(tmpDir) // 隔离目录清理 + 消除 unused
 	cfgManager := config.NewConfigManagerWithEmptyConfig()
 	cfg := cfgManager.GetConfig()
 	cfg.Users = []model.UserConfig{

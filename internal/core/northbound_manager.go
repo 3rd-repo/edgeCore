@@ -659,6 +659,10 @@ func (nm *NorthboundManager) DeleteMQTTConfig(id string) error {
 	}
 
 	// Remove from config
+	// P1-3 防护（2026-10-13 审查）：落盘失败必须回滚内存节，否则内存已删、
+	// DB 未删，下一次其他节的成功保存才真正删库——分叉方向不可控。
+	oldConfigs := make([]model.MQTTConfig, len(nm.config.MQTT))
+	copy(oldConfigs, nm.config.MQTT)
 	newConfigs := []model.MQTTConfig{}
 	for _, c := range nm.config.MQTT {
 		if c.ID != id {
@@ -667,7 +671,11 @@ func (nm *NorthboundManager) DeleteMQTTConfig(id string) error {
 	}
 	nm.config.MQTT = newConfigs
 
-	return nm.saveConfig()
+	if err := nm.saveConfig(); err != nil {
+		nm.config.MQTT = oldConfigs
+		return err
+	}
+	return nil
 }
 
 // SparkplugB Operations
@@ -681,6 +689,8 @@ func (nm *NorthboundManager) UpsertSparkplugBConfig(cfg model.SparkplugBConfig) 
 	}
 
 	found := false
+	oldSparkplugB := make([]model.SparkplugBConfig, len(nm.config.SparkplugB))
+	copy(oldSparkplugB, nm.config.SparkplugB)
 	for i, c := range nm.config.SparkplugB {
 		if c.ID == cfg.ID {
 			nm.config.SparkplugB[i] = cfg
@@ -693,6 +703,7 @@ func (nm *NorthboundManager) UpsertSparkplugBConfig(cfg model.SparkplugBConfig) 
 	}
 
 	if err := nm.saveConfig(); err != nil {
+		nm.config.SparkplugB = oldSparkplugB // P1-3 防护：落盘失败回滚内存
 		return "", err
 	}
 
@@ -727,6 +738,8 @@ func (nm *NorthboundManager) DeleteSparkplugBConfig(id string) error {
 		delete(nm.sparkplugClients, id)
 	}
 
+	oldConfigs := make([]model.SparkplugBConfig, len(nm.config.SparkplugB))
+	copy(oldConfigs, nm.config.SparkplugB)
 	newConfigs := []model.SparkplugBConfig{}
 	for _, c := range nm.config.SparkplugB {
 		if c.ID != id {
@@ -735,7 +748,11 @@ func (nm *NorthboundManager) DeleteSparkplugBConfig(id string) error {
 	}
 	nm.config.SparkplugB = newConfigs
 
-	return nm.saveConfig()
+	if err := nm.saveConfig(); err != nil {
+		nm.config.SparkplugB = oldConfigs // P1-3 防护：落盘失败回滚内存
+		return err
+	}
+	return nil
 }
 
 // OPC UA Operations
@@ -749,6 +766,8 @@ func (nm *NorthboundManager) UpsertOPCUAConfig(cfg model.OPCUAConfig) (model.OPC
 	}
 
 	found := false
+	oldOPCUA := make([]model.OPCUAConfig, len(nm.config.OPCUA))
+	copy(oldOPCUA, nm.config.OPCUA)
 	for i, c := range nm.config.OPCUA {
 		if c.ID == cfg.ID {
 			cfg = model.MergeOPCUAConfig(c, cfg)
@@ -771,6 +790,7 @@ func (nm *NorthboundManager) UpsertOPCUAConfig(cfg model.OPCUAConfig) (model.OPC
 	}
 
 	if err := nm.saveConfig(); err != nil {
+		nm.config.OPCUA = oldOPCUA // P1-3 防护：落盘失败回滚内存
 		return model.OPCUAConfig{}, "", err
 	}
 
@@ -804,6 +824,8 @@ func (nm *NorthboundManager) UpdateOPCUACertificates(id string, certPEM, keyPEM 
 	defer nm.mu.Unlock()
 
 	idx := -1
+	oldOPCUA := make([]model.OPCUAConfig, len(nm.config.OPCUA))
+	copy(oldOPCUA, nm.config.OPCUA)
 	for i, c := range nm.config.OPCUA {
 		if c.ID == id {
 			idx = i
@@ -836,6 +858,7 @@ func (nm *NorthboundManager) UpdateOPCUACertificates(id string, certPEM, keyPEM 
 	}
 
 	if err := nm.saveConfig(); err != nil {
+		nm.config.OPCUA = oldOPCUA // P1-3 防护：落盘失败回滚内存（UpdateOPCUACertificates）
 		return model.OPCUAConfig{}, err
 	}
 
@@ -863,6 +886,8 @@ func (nm *NorthboundManager) DeleteOPCUAConfig(id string) error {
 		delete(nm.opcuaServers, id)
 	}
 
+	oldConfigs := make([]model.OPCUAConfig, len(nm.config.OPCUA))
+	copy(oldConfigs, nm.config.OPCUA)
 	newConfigs := []model.OPCUAConfig{}
 	for _, c := range nm.config.OPCUA {
 		if c.ID != id {
@@ -871,7 +896,11 @@ func (nm *NorthboundManager) DeleteOPCUAConfig(id string) error {
 	}
 	nm.config.OPCUA = newConfigs
 
-	return nm.saveConfig()
+	if err := nm.saveConfig(); err != nil {
+		nm.config.OPCUA = oldConfigs // P1-3 防护：落盘失败回滚内存
+		return err
+	}
+	return nil
 }
 
 // BACnet Server Operations
@@ -886,6 +915,8 @@ func (nm *NorthboundManager) UpsertBACnetServerConfig(cfg model.BACnetServerConf
 	}
 
 	found := false
+	oldBACnet := make([]model.BACnetServerConfig, len(nm.config.BACnetServer))
+	copy(oldBACnet, nm.config.BACnetServer)
 	for i, c := range nm.config.BACnetServer {
 		if c.ID == cfg.ID {
 			nm.config.BACnetServer[i] = cfg
@@ -898,6 +929,7 @@ func (nm *NorthboundManager) UpsertBACnetServerConfig(cfg model.BACnetServerConf
 	}
 
 	if err := nm.saveConfig(); err != nil {
+		nm.config.BACnetServer = oldBACnet // P1-3 防护：落盘失败回滚内存
 		return model.BACnetServerConfig{}, "", err
 	}
 
@@ -935,6 +967,8 @@ func (nm *NorthboundManager) DeleteBACnetServerConfig(id string) error {
 		delete(nm.bacnetServers, id)
 	}
 
+	oldConfigs := make([]model.BACnetServerConfig, len(nm.config.BACnetServer))
+	copy(oldConfigs, nm.config.BACnetServer)
 	newConfigs := []model.BACnetServerConfig{}
 	for _, c := range nm.config.BACnetServer {
 		if c.ID != id {
@@ -943,7 +977,11 @@ func (nm *NorthboundManager) DeleteBACnetServerConfig(id string) error {
 	}
 	nm.config.BACnetServer = newConfigs
 
-	return nm.saveConfig()
+	if err := nm.saveConfig(); err != nil {
+		nm.config.BACnetServer = oldConfigs // P1-3 防护：落盘失败回滚内存
+		return err
+	}
+	return nil
 }
 
 // SyncBACnetServer 同步指定 BACnet Server 的地址空间

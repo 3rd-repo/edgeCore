@@ -33,6 +33,16 @@ func (sm *SystemManager) SetConfigManager(cm *config.ConfigManager) {
 	sm.cfgManager = cm
 }
 
+// SetConfig 重新挂载配置指针（导入/恢复后由 ConfigManager.Reload 回调触发）。
+// 不重挂载的话 persist() 会把导入前的旧 Channels/Northbound/EdgeRules 整体
+// 写回 DB，静默回滚刚导入的配置（P0 数据丢失）。
+func (sm *SystemManager) SetConfig(cfg *config.Config) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.config = cfg
+	sm.normalizeHostnameConfigLocked()
+}
+
 func NewSystemManager(cfg *config.Config) *SystemManager {
 	// Initialize with defaults if empty
 	if cfg.System.Time.Mode == "" {

@@ -1,8 +1,12 @@
 package config
 
 import (
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/anviod/edgeCore/internal/model"
 	"github.com/anviod/edgeCore/internal/storage"
@@ -18,6 +22,10 @@ type ConfigManager struct {
 	Config *Config
 	db     *bbolt.DB
 	useDB  bool
+	// onReload：Reload() 成功后同步回调，通知持有旧 *Config 引用/快照的
+	// 组件重新挂载（P0 数据丢失防护：否则导入/恢复后旧内存态会随下一次
+	// 全量保存把刚导入的配置静默覆盖回去）。
+	onReload []func(*Config)
 }
 
 type Config struct {
@@ -113,6 +121,11 @@ func (cm *ConfigManager) AttachDB(db *bbolt.DB) {
 	cm.useDB = true
 }
 
+// OnReload 注册 Reload() 完成后的回调（导入/恢复场景下组件重新挂载新配置）。
+func (cm *ConfigManager) OnReload(fn func(*Config)) {
+	cm.onReload = append(cm.onReload, fn)
+}
+
 // Reload 从数据库重新加载配置。
 func (cm *ConfigManager) Reload() error {
 	if !cm.useDB || cm.db == nil {
@@ -123,6 +136,9 @@ func (cm *ConfigManager) Reload() error {
 		return err
 	}
 	cm.Config = newCfg
+	for _, fn := range cm.onReload {
+		fn(newCfg)
+	}
 	return nil
 }
 
@@ -168,9 +184,12 @@ func LoadConfigFromDB(db *bbolt.DB) (*Config, error) {
 	// 会拒收整条通道，导致该通道采集在重启后全部消失。
 	// 这里在加载层按"保留首个"去重并告警，不改变 API 层（AddChannel/UpdateChannel）
 	// 的严格校验；后续任一次通道保存都会把去重结果写回 DB，实现数据自愈。
+	// P1 防护（2026-10-13 审查）：被丢弃的重复设备副本先落 dropped 文件，
+	// 副本中的点位表不静默销毁。
 	for i := range channels {
 		seen := make(map[string]struct{}, len(channels[i].Devices))
 		kept := channels[i].Devices[:0]
+		var droppedDups []model.Device
 		for _, dev := range channels[i].Devices {
 			if _, dup := seen[dev.ID]; dup {
 				zap.L().Warn("dropping duplicate device in persisted channel",
@@ -178,10 +197,14 @@ func LoadConfigFromDB(db *bbolt.DB) (*Config, error) {
 					zap.String("channel_name", channels[i].Name),
 					zap.String("device_id", dev.ID),
 					zap.String("device_name", dev.Name))
+				droppedDups = append(droppedDups, dev)
 				continue
 			}
 			seen[dev.ID] = struct{}{}
 			kept = append(kept, dev)
+		}
+		if len(droppedDups) > 0 {
+			dumpDroppedEntries("duplicate-devices-"+channels[i].ID, droppedDups)
 		}
 		channels[i].Devices = kept
 	}
@@ -240,6 +263,32 @@ func LoadConfigFromDB(db *bbolt.DB) (*Config, error) {
 	return cfg, nil
 }
 
+// dumpDroppedEntries 将持久化层剔除的脏数据落盘带时间戳副本，供人工恢复/排查。
+// 隔离策略（P1 防护，2026-10-13 审查）：脏数据不允许劫持持久化管道，
+// 但也绝不静默消失——先留副本再剔除。
+func dumpDroppedEntries(kind string, entries any) {
+	if entries == nil {
+		return
+	}
+	data, err := json.Marshal(entries)
+	if err != nil {
+		zap.L().Error("failed to marshal dropped entries for dump", zap.String("kind", kind), zap.Error(err))
+		return
+	}
+	if err := os.MkdirAll("data", 0755); err != nil {
+		zap.L().Error("failed to create data dir for dropped entries dump", zap.Error(err))
+		return
+	}
+	path := filepath.Join("data", fmt.Sprintf("dropped-%s-%s.json", kind, time.Now().Format("20060102-150405")))
+	if err := os.WriteFile(path, data, 0644); err != nil {
+		zap.L().Error("failed to dump dropped entries", zap.String("kind", kind), zap.String("path", path), zap.Error(err))
+		return
+	}
+	zap.L().Error("Dropped invalid entries during save (dump saved for recovery)",
+		zap.String("kind", kind),
+		zap.String("dump", path))
+}
+
 func SaveConfigToDB(db *bbolt.DB, cfg *Config) error {
 	configStore, err := storage.NewConfigStore(db)
 	if err != nil {
@@ -255,19 +304,22 @@ func SaveConfigToDB(db *bbolt.DB, cfg *Config) error {
 	for _, channel := range cfg.Channels {
 		allDevices = append(allDevices, channel.Devices...)
 	}
-	allDevices, err = model.NormalizeDevicesForSave(allDevices)
-	if err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	// P1 防护（2026-10-13 审查）：容错校验——单条脏数据不得让全系统配置
+	// 无法落盘。剔除的条目先落 dropped 副本。通道 blob 内的数据原样保留，
+	// 仅 Devices bucket 跳过非法条目。
+	allDevices, droppedDevices := model.SanitizeDevicesForSave(allDevices)
+	if len(droppedDevices) > 0 {
+		dumpDroppedEntries("devices", droppedDevices)
 	}
 
-	northbound, err := model.NormalizeNorthboundForSave(cfg.Northbound)
-	if err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	northbound, droppedNorthbound := model.SanitizeNorthboundForSave(cfg.Northbound)
+	if len(droppedNorthbound) > 0 {
+		dumpDroppedEntries("northbound", droppedNorthbound)
 	}
 
-	edgeRules, err := model.NormalizeEdgeRulesForSave(cfg.EdgeRules)
-	if err != nil {
-		return fmt.Errorf("failed to save config: %w", err)
+	edgeRules, droppedRules := model.SanitizeEdgeRulesForSave(cfg.EdgeRules)
+	if len(droppedRules) > 0 {
+		dumpDroppedEntries("edge-rules", droppedRules)
 	}
 
 	if err := configStore.SaveAllConfig(serverConfig, cfg.Channels, allDevices,

@@ -92,6 +92,7 @@ type Server struct {
 	runtimeCompactStop     chan struct{}
 	runtimeCompactOnce     sync.Once
 	runtimeCompactStopOnce sync.Once
+	restartSignal          chan struct{} // 重启端点 → main 统一优雅关停路径（P0 数据丢失防护）
 	updater                *update.Manager // 软件更新检查与一键升级
 }
 
@@ -201,9 +202,13 @@ func (s *Server) SetStorageAttachHook(fn func(*storage.Storage)) {
 	s.storageAttachHook = fn
 }
 
+// SetRestartSignal 接线重启端点：收到信号后 main 走与 SIGTERM 相同的优雅关停。
+func (s *Server) SetRestartSignal(ch chan struct{}) {
+	s.restartSignal = ch
+}
+
 // SetRuntimeStartHook 注册数据采集/北向启动回调（安装完成后或正常启动时调用）。
-func (s *Server) SetRuntimeStartHook(fn func()) {
-	s.serverMu.Lock()
+func (s *Server) SetRuntimeStartHook(fn func()) {	s.serverMu.Lock()
 	defer s.serverMu.Unlock()
 	s.runtimeStartHook = fn
 }
@@ -2423,20 +2428,30 @@ func (s *Server) exportDevicePoints(c *fiber.Ctx) error {
 	}
 
 	// 构建导出数据
+	// P1-11（2026-10-13 审查）：与 model.Point 全字段对齐——此前缺
+	// parse_type/format/word_order/读写公式/scan_class/threshold，
+	// "导出备份→改→导入还原" roundtrip 会把这些字段静默清零。
 	type ExportPoint struct {
-		ID           string  `json:"id"`
-		Name         string  `json:"name"`
-		Address      string  `json:"address"`
-		DataType     string  `json:"datatype"`
-		Scale        float64 `json:"scale"`
-		Offset       float64 `json:"offset"`
-		Unit         string  `json:"unit"`
-		ReadWrite    string  `json:"readwrite"`
-		Group        string  `json:"group"`
-		ReportMode   string  `json:"report_mode"`
-		SlaveID      uint8   `json:"slave_id,omitempty"`
-		RegisterType string  `json:"register_type,omitempty"`
-		FunctionCode byte    `json:"function_code,omitempty"`
+		ID           string               `json:"id"`
+		Name         string               `json:"name"`
+		Address      string               `json:"address"`
+		DataType     string               `json:"datatype"`
+		ParseType    string               `json:"parse_type,omitempty"`
+		Scale        float64              `json:"scale"`
+		Offset       float64              `json:"offset"`
+		Format       string               `json:"format,omitempty"`
+		WordOrder    string               `json:"word_order,omitempty"`
+		ReadFormula  string               `json:"read_formula,omitempty"`
+		WriteFormula string               `json:"write_formula,omitempty"`
+		Unit         string               `json:"unit"`
+		ReadWrite    string               `json:"readwrite"`
+		Group        string               `json:"group"`
+		ScanClass    string               `json:"scan_class,omitempty"`
+		ReportMode   string               `json:"report_mode"`
+		Threshold    *model.ThresholdConfig `json:"threshold,omitempty"`
+		SlaveID      uint8                `json:"slave_id,omitempty"`
+		RegisterType string               `json:"register_type,omitempty"`
+		FunctionCode byte                 `json:"function_code,omitempty"`
 	}
 
 	exportData := struct {
@@ -2460,12 +2475,19 @@ func (s *Server) exportDevicePoints(c *fiber.Ctx) error {
 			Name:         p.Name,
 			Address:      p.Address,
 			DataType:     p.DataType,
+			ParseType:    p.ParseType,
 			Scale:        p.Scale,
 			Offset:       p.Offset,
+			Format:       p.Format,
+			WordOrder:    p.WordOrder,
+			ReadFormula:  p.ReadFormula,
+			WriteFormula: p.WriteFormula,
 			Unit:         p.Unit,
 			ReadWrite:    p.ReadWrite,
 			Group:        p.Group,
+			ScanClass:    p.ScanClass,
 			ReportMode:   p.ReportMode,
+			Threshold:    p.Threshold,
 			RegisterType: p.RegisterType.String(),
 			FunctionCode: p.FunctionCode,
 		}
@@ -2497,20 +2519,28 @@ func (s *Server) importDevicePoints(c *fiber.Ctx) error {
 	}
 
 	// 解析导入数据
+	// P1-11（2026-10-13 审查）：与 ExportPoint / model.Point 全字段对齐
 	type ImportPoint struct {
-		ID           string  `json:"id"`
-		Name         string  `json:"name"`
-		Address      string  `json:"address"`
-		DataType     string  `json:"datatype"`
-		Scale        float64 `json:"scale"`
-		Offset       float64 `json:"offset"`
-		Unit         string  `json:"unit"`
-		ReadWrite    string  `json:"readwrite"`
-		Group        string  `json:"group"`
-		ReportMode   string  `json:"report_mode"`
-		SlaveID      uint8   `json:"slave_id,omitempty"`
-		RegisterType string  `json:"register_type,omitempty"`
-		FunctionCode byte    `json:"function_code,omitempty"`
+		ID           string                 `json:"id"`
+		Name         string                 `json:"name"`
+		Address      string                 `json:"address"`
+		DataType     string                 `json:"datatype"`
+		ParseType    string                 `json:"parse_type,omitempty"`
+		Scale        float64                `json:"scale"`
+		Offset       float64                `json:"offset"`
+		Format       string                 `json:"format,omitempty"`
+		WordOrder    string                 `json:"word_order,omitempty"`
+		ReadFormula  string                 `json:"read_formula,omitempty"`
+		WriteFormula string                 `json:"write_formula,omitempty"`
+		Unit         string                 `json:"unit"`
+		ReadWrite    string                 `json:"readwrite"`
+		Group        string                 `json:"group"`
+		ScanClass    string                 `json:"scan_class,omitempty"`
+		ReportMode   string                 `json:"report_mode"`
+		Threshold    *model.ThresholdConfig `json:"threshold,omitempty"`
+		SlaveID      uint8                  `json:"slave_id,omitempty"`
+		RegisterType string                 `json:"register_type,omitempty"`
+		FunctionCode byte                   `json:"function_code,omitempty"`
 	}
 
 	var importData struct {
@@ -2524,11 +2554,13 @@ func (s *Server) importDevicePoints(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
 	}
 
-	// 如果指定了目标通道/设备ID，使用请求中的值
-	if importData.ChannelID != "" {
+	// P1 防护（2026-10-13 审查）：URL 参数是权威目标。此前导入文件内的
+	// channel_id/device_id 会覆盖 URL 参数——一份目标 ID 写错的文件会把
+	// 另一台设备的点位按 replace 模式清空。现在仅在 URL 未指定时回退到文件值。
+	if channelId == "" && importData.ChannelID != "" {
 		channelId = importData.ChannelID
 	}
-	if importData.DeviceID != "" {
+	if deviceId == "" && importData.DeviceID != "" {
 		deviceId = importData.DeviceID
 	}
 
@@ -2540,12 +2572,19 @@ func (s *Server) importDevicePoints(c *fiber.Ctx) error {
 			Name:         ip.Name,
 			Address:      ip.Address,
 			DataType:     ip.DataType,
+			ParseType:    ip.ParseType,
 			Scale:        ip.Scale,
 			Offset:       ip.Offset,
+			Format:       ip.Format,
+			WordOrder:    ip.WordOrder,
+			ReadFormula:  ip.ReadFormula,
+			WriteFormula: ip.WriteFormula,
 			Unit:         ip.Unit,
 			ReadWrite:    ip.ReadWrite,
 			Group:        ip.Group,
+			ScanClass:    ip.ScanClass,
 			ReportMode:   ip.ReportMode,
+			Threshold:    ip.Threshold,
 			RegisterType: model.ParseRegisterType(ip.RegisterType),
 			FunctionCode: ip.FunctionCode,
 		}
@@ -2561,21 +2600,21 @@ func (s *Server) importDevicePoints(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "no points to import"})
 	}
 
-	// 根据模式处理
+	// 替换模式：原子替换（P1 防护——此前先删后写，AddPoints 失败时设备点位
+	// 已被清空且落盘，无法恢复）。ReplacePoints 全部校验通过才替换落盘。
 	if importData.ReplaceMode {
-		// 替换模式：先删除所有现有点位，再添加新点位
-		existingPointIDs := make([]string, 0, len(dev.Points))
-		for _, p := range dev.Points {
-			existingPointIDs = append(existingPointIDs, p.ID)
+		if err := s.cm.ReplacePoints(channelId, deviceId, points); err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to replace points: " + err.Error()})
 		}
-		if len(existingPointIDs) > 0 {
-			if err := s.cm.RemovePoints(channelId, deviceId, existingPointIDs); err != nil {
-				return c.Status(500).JSON(fiber.Map{"error": "failed to remove existing points: " + err.Error()})
-			}
-		}
+		return c.JSON(fiber.Map{
+			"success":     true,
+			"message":     fmt.Sprintf("successfully replaced %d points", len(points)),
+			"imported":    len(points),
+			"replaceMode": true,
+		})
 	}
 
-	// 添加新点位
+	// 追加模式
 	if err := s.cm.AddPoints(channelId, deviceId, points); err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to add points: " + err.Error()})
 	}
@@ -2584,7 +2623,7 @@ func (s *Server) importDevicePoints(c *fiber.Ctx) error {
 		"success":     true,
 		"message":     fmt.Sprintf("successfully imported %d points", len(points)),
 		"imported":    len(points),
-		"replaceMode": importData.ReplaceMode,
+		"replaceMode": false,
 	})
 }
 
@@ -2613,6 +2652,12 @@ func (s *Server) exportConfig(c *fiber.Ctx) error {
 
 // importConfig 导入配置（JSON格式）
 // POST /api/config/import
+//
+// P0 数据丢失防护（2026-10-13 审查）：
+//   - 请求体缺失的 section 一律保留 DB 现值，绝不覆盖（此前缺 channels 字段会把
+//     bucket 写成字面量 null，导致整批通道被清空；缺 users 会让登录失效）。
+//   - 值为 JSON null 的 section 同样视为缺失。
+//   - 导入前自动做一次一致性备份，误导入可回滚。
 func (s *Server) importConfig(c *fiber.Ctx) error {
 	if s.storage == nil {
 		return c.Status(503).JSON(fiber.Map{"error": "storage not available"})
@@ -2623,9 +2668,59 @@ func (s *Server) importConfig(c *fiber.Ctx) error {
 		return c.Status(400).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
 	}
 
+	// 解析 section 存在性（缺失 vs 显式 null 均视为"未提供"）
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(c.Body(), &raw); err != nil {
+		return c.Status(400).JSON(fiber.Map{"error": "invalid request body: " + err.Error()})
+	}
+	sectionPresent := func(name string) bool {
+		v, ok := raw[name]
+		return ok && string(v) != "null" && string(v) != ""
+	}
+
 	configStore, err := storage.NewConfigStore(s.storage.GetConfigDB())
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to create config store: " + err.Error()})
+	}
+
+	// 缺失的 section 用 DB 现值回填，保证 ImportConfig 单事务写回时保持原状
+	if !sectionPresent("server") || !sectionPresent("channels") || !sectionPresent("devices") ||
+		!sectionPresent("northbound") || !sectionPresent("edge_rules") || !sectionPresent("system") ||
+		!sectionPresent("users") || !sectionPresent("virtual_shadows") {
+		current, err := configStore.ExportAllConfig()
+		if err != nil {
+			return c.Status(500).JSON(fiber.Map{"error": "failed to load current config for missing sections: " + err.Error()})
+		}
+		if !sectionPresent("server") {
+			exportData.Server = current.Server
+		}
+		if !sectionPresent("channels") {
+			exportData.Channels = current.Channels
+		}
+		if !sectionPresent("devices") {
+			exportData.Devices = current.Devices
+		}
+		if !sectionPresent("northbound") {
+			exportData.Northbound = current.Northbound
+		}
+		if !sectionPresent("edge_rules") {
+			exportData.EdgeRules = current.EdgeRules
+		}
+		if !sectionPresent("system") {
+			exportData.System = current.System
+		}
+		if !sectionPresent("users") {
+			exportData.Users = current.Users
+		}
+		if !sectionPresent("virtual_shadows") {
+			exportData.VirtualShadows = current.VirtualShadows
+		}
+	}
+
+	// 导入前自动备份：覆盖式导入不可逆，先留一份一致性快照
+	backupDir := filepath.Join("data", "backups", "pre-import")
+	if _, err := s.storage.BackupConfigDB(backupDir); err != nil {
+		return c.Status(500).JSON(fiber.Map{"error": "failed to create pre-import backup (import aborted): " + err.Error()})
 	}
 
 	if err := configStore.ImportConfig(&exportData); err != nil {
@@ -3035,7 +3130,17 @@ func (s *Server) pullRemoteConfig(c *fiber.Ctx) error {
 		req.Port = 8080
 	}
 
-	result, err := s.storage.PullRemoteConfigAndImport(req.Host, req.Port, req.Token, req.UseHTTPS)
+	// P1-17 防护（2026-10-13 审查）：覆盖式导入不可逆，必须显式 confirm=true；
+	// 远端用户账号默认不覆盖本地（overwrite_users=true 才覆盖）。
+	if c.Query("confirm") != "true" {
+		return c.Status(400).JSON(fiber.Map{
+			"error":   "this operation overwrites local configuration; retry with ?confirm=true",
+			"hint":    "add ?confirm=true to proceed; add &overwrite_users=true to also overwrite local user accounts (default: preserve local users)",
+		})
+	}
+	overwriteUsers := c.Query("overwrite_users") == "true"
+
+	result, err := s.storage.PullRemoteConfigAndImport(req.Host, req.Port, req.Token, req.UseHTTPS, overwriteUsers)
 	if err != nil {
 		return c.Status(500).JSON(fiber.Map{"error": "failed to pull remote config: " + err.Error()})
 	}
@@ -3047,13 +3152,14 @@ func (s *Server) pullRemoteConfig(c *fiber.Ctx) error {
 	}
 
 	return c.JSON(fiber.Map{
-		"status":          "success",
-		"message":         "已从远程网关强制拉取并覆盖本地配置",
-		"remote_source":   result.RemoteSource,
-		"force_overwrite": true,
-		"device_count":    result.DeviceCount,
-		"channel_count":   result.ChannelCount,
-		"preserved_port":  result.PreservedPort,
+		"status":           "success",
+		"message":          "已从远程网关拉取并导入配置",
+		"remote_source":    result.RemoteSource,
+		"force_overwrite":  overwriteUsers,
+		"preserved_users":  result.PreservedUsers,
+		"device_count":     result.DeviceCount,
+		"channel_count":    result.ChannelCount,
+		"preserved_port":   result.PreservedPort,
 	})
 }
 

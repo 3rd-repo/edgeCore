@@ -3,11 +3,33 @@ package server
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"testing"
 
+	"github.com/anviod/edgeCore/internal/config"
+	"github.com/anviod/edgeCore/internal/core"
+	"github.com/anviod/edgeCore/internal/storage"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// newDBBackedTestServer 构造带真实 bbolt 存储的测试 Server。
+// P1-13 语义变更（2026-10-13 审查）：AI 设置在 DB 不可用时不再"假成功"，
+// 持久化相关测试必须用 DB-backed 环境。
+func newDBBackedTestServer(t *testing.T) *Server {
+	t.Helper()
+	dataDir := filepath.Join(testOutputDir(t), "data")
+	store, err := storage.NewStorage(dataDir)
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = store.Close() })
+
+	cfgManager, err := config.NewConfigManagerWithDB(store.GetConfigDB())
+	require.NoError(t, err)
+
+	pipeline := core.NewDataPipeline(100)
+	cm := core.NewChannelManager(pipeline, nil)
+	return NewServer(cm, store, pipeline, nil, nil, nil, nil, cfgManager, nil)
+}
 
 func TestGetAiSettings_Default(t *testing.T) {
 	srv := newChannelTestServer(t)
@@ -27,7 +49,7 @@ func TestGetAiSettings_Default(t *testing.T) {
 }
 
 func TestPutAiSettings_RemoteMode(t *testing.T) {
-	srv := newChannelTestServer(t)
+	srv := newDBBackedTestServer(t)
 
 	payload, err := json.Marshal(map[string]any{
 		"deployment_mode": "remote",
@@ -77,7 +99,7 @@ func TestPutAiSettings_CloudRequiresEnableCloud(t *testing.T) {
 }
 
 func TestPutAiSettings_PreservesAPIKey(t *testing.T) {
-	srv := newChannelTestServer(t)
+	srv := newDBBackedTestServer(t)
 
 	first, err := json.Marshal(map[string]any{
 		"deployment_mode": "cloud",

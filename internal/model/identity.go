@@ -232,3 +232,143 @@ func NormalizeDevicesForSave(devices []Device) ([]Device, error) {
 	}
 	return out, nil
 }
+
+// SanitizeDevicesForSave 容错版设备校验：剔除无法生成合法 ID 的条目（记录其
+// 名称）而不是整体失败。P1 防护（2026-10-13 审查）：所有配置节共用一个全量
+// 写入口，Normalize 的 all-or-nothing 语义会让单条脏数据劫持整条持久化管道，
+// 导致全系统配置都无法落盘。
+func SanitizeDevicesForSave(devices []Device) ([]Device, []string) {
+	seen := make(map[string]struct{}, len(devices))
+	out := make([]Device, 0, len(devices))
+	var dropped []string
+	for _, device := range devices {
+		if err := EnsureDeviceID(&device); err != nil {
+			dropped = append(dropped, fmt.Sprintf("device %q (name %q)", device.ID, device.Name))
+			continue
+		}
+		if _, ok := seen[device.ID]; ok {
+			continue
+		}
+		seen[device.ID] = struct{}{}
+		out = append(out, device)
+	}
+	return out, dropped
+}
+
+// filterEntries 泛型过滤：validate 修改并通过则保留，失败则记录剔除。
+func filterEntries[T any](items []T, validate func(*T) error, onDrop func(T)) []T {
+	kept := items[:0]
+	for i := range items {
+		if err := validate(&items[i]); err != nil {
+			onDrop(items[i])
+			continue
+		}
+		kept = append(kept, items[i])
+	}
+	return kept
+}
+
+// SanitizeNorthboundForSave 容错版北向校验：剔除无法生成合法 ID 的条目而不是整体失败。
+func SanitizeNorthboundForSave(cfg NorthboundConfig) (NorthboundConfig, []string) {
+	out := cfg
+	out.Status = nil
+	var dropped []string
+
+	out.MQTT = filterEntries(out.MQTT, func(c *MQTTConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "MQTT northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c MQTTConfig) {
+		dropped = append(dropped, fmt.Sprintf("MQTT %q (name %q)", c.ID, c.Name))
+	})
+
+	out.HTTP = filterEntries(out.HTTP, func(c *HTTPConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "HTTP northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c HTTPConfig) {
+		dropped = append(dropped, fmt.Sprintf("HTTP %q (name %q)", c.ID, c.Name))
+	})
+
+	out.OPCUA = filterEntries(out.OPCUA, func(c *OPCUAConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "OPC UA northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c OPCUAConfig) {
+		dropped = append(dropped, fmt.Sprintf("OPC UA %q (name %q)", c.ID, c.Name))
+	})
+
+	out.SparkplugB = filterEntries(out.SparkplugB, func(c *SparkplugBConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "SparkplugB northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c SparkplugBConfig) {
+		dropped = append(dropped, fmt.Sprintf("SparkplugB %q (name %q)", c.ID, c.Name))
+	})
+
+	out.EdgeOSMQTT = filterEntries(out.EdgeOSMQTT, func(c *EdgeOSMQTTConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "edgeOS(MQTT) northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c EdgeOSMQTTConfig) {
+		dropped = append(dropped, fmt.Sprintf("edgeOS(MQTT) %q (name %q)", c.ID, c.Name))
+	})
+
+	out.EdgeOSNATS = filterEntries(out.EdgeOSNATS, func(c *EdgeOSNATSConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "edgeOS(NATS) northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c EdgeOSNATSConfig) {
+		dropped = append(dropped, fmt.Sprintf("edgeOS(NATS) %q (name %q)", c.ID, c.Name))
+	})
+
+	out.BACnetServer = filterEntries(out.BACnetServer, func(c *BACnetServerConfig) error {
+		id, err := ensureNamedID(c.ID, c.Name, "BACnet Server northbound channel")
+		if err != nil {
+			return err
+		}
+		c.ID = id
+		return nil
+	}, func(c BACnetServerConfig) {
+		dropped = append(dropped, fmt.Sprintf("BACnet Server %q (name %q)", c.ID, c.Name))
+	})
+
+	return out, dropped
+}
+
+// SanitizeEdgeRulesForSave 容错版边缘规则校验：剔除无法生成合法 ID 的条目而不是整体失败。
+func SanitizeEdgeRulesForSave(rules []EdgeRule) ([]EdgeRule, []string) {
+	seen := make(map[string]struct{}, len(rules))
+	out := make([]EdgeRule, 0, len(rules))
+	var dropped []string
+	for _, rule := range rules {
+		if err := EnsureEdgeRuleID(&rule); err != nil {
+			dropped = append(dropped, fmt.Sprintf("edge rule %q (name %q)", rule.ID, rule.Name))
+			continue
+		}
+		if _, ok := seen[rule.ID]; ok {
+			continue
+		}
+		seen[rule.ID] = struct{}{}
+		out = append(out, rule)
+	}
+	return out, dropped
+}

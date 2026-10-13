@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"log"
 	"time"
 
 	"github.com/anviod/edgeCore/internal/model"
@@ -52,7 +53,11 @@ func (m *StoreForwardManager) cacheSouthbound(v model.Value) {
 		return
 	}
 	key := v.ChannelID + "/" + v.DeviceID + "/" + v.PointID + "_" + time.Now().Format(time.RFC3339Nano)
-	_ = m.store.SaveData(storage.BucketDataCache, storeForwardSouthKey+"/"+key, payload)
+	// P2 加固（2026-10-13 审查）：此前 `_ =` 完全吞错——断网续传缓存写失败
+	// 静默丢失，与该 bucket 的职责矛盾。至少记录错误供排查。
+	if err := m.store.SaveData(storage.BucketDataCache, storeForwardSouthKey+"/"+key, payload); err != nil {
+		log.Printf("[store-forward] failed to cache southbound value (data may be lost): %v", err)
+	}
 	m.pruneSouthbound()
 }
 

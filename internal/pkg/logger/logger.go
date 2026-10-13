@@ -2,8 +2,10 @@ package logger
 
 import (
 	"compress/gzip"
+	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -131,20 +133,25 @@ func (w *AsyncRotateWriter) rotate() error {
 	base := strings.TrimSuffix(w.filename, ext)
 	archiveName := base + "_" + timestamp + ext + ".gz"
 
-	// Compress the log file
+	// P1-16 防护（2026-10-13 审查）：压缩失败（含中途失败）绝不删除源文件。
+	// 此前 compressLogFile 读取中途出错也返回 nil，生成截断 .gz 后源日志被删，
+	// 这段日志永久丢失。现在：压缩失败保留源文件；成功才删除。
 	if err := w.compressLogFile(w.filename, archiveName); err != nil {
-		// If compression fails, just continue with new file
-		os.Remove(w.filename)
+		os.Stderr.WriteString("Log rotation: compress failed, keeping original file: " + err.Error() + "\n")
 	} else {
-		// Remove the original file after compression
+		// Remove the original file after successful compression
 		os.Remove(w.filename)
+		// 清理超量历史归档，防止磁盘占满反噬 bbolt 写入
+		w.pruneOldArchives(30)
 	}
 
 	// Open new file
 	return w.openFile()
 }
 
-// compressLogFile compresses a log file using gzip
+// compressLogFile compresses a log file using gzip.
+// 所有错误路径（打开/写入/关闭 flush）都必须返回错误——中途失败时调用方
+// 会保留源文件，截断的 .gz 也不会被误当作成功归档。
 func (w *AsyncRotateWriter) compressLogFile(source, target string) error {
 	// Open the source file
 	src, err := os.Open(source)
@@ -158,27 +165,60 @@ func (w *AsyncRotateWriter) compressLogFile(source, target string) error {
 	if err != nil {
 		return err
 	}
-	defer dst.Close()
 
 	// Create a gzip writer
 	gzw := gzip.NewWriter(dst)
-	defer gzw.Close()
 
 	// Copy the source file to the gzip writer
 	buf := make([]byte, 1024*1024) // 1MB buffer
 	for {
-		n, err := src.Read(buf)
-		if err != nil {
-			break
-		}
+		n, rerr := src.Read(buf)
 		if n > 0 {
-			if _, err := gzw.Write(buf[:n]); err != nil {
-				return err
+			if _, werr := gzw.Write(buf[:n]); werr != nil {
+				gzw.Close()
+				dst.Close()
+				return werr
 			}
+		}
+		if rerr != nil {
+			if rerr != io.EOF {
+				gzw.Close()
+				dst.Close()
+				return rerr
+			}
+			break
 		}
 	}
 
+	// Close 错误必须检查：gzip 尾部/flush 失败 = 归档不完整
+	if err := gzw.Close(); err != nil {
+		dst.Close()
+		return err
+	}
+	if err := dst.Close(); err != nil {
+		return err
+	}
 	return nil
+}
+
+// pruneOldArchives 清理超量的历史 .gz 归档（保留最新 maxKeep 份）。
+// P1-16 防护：此前 .gz 无保留上限，logs/ 持续增长，磁盘占满反噬 bbolt 写入。
+func (w *AsyncRotateWriter) pruneOldArchives(maxKeep int) {
+	if maxKeep <= 0 {
+		maxKeep = 30
+	}
+	ext := filepath.Ext(w.filename)
+	base := strings.TrimSuffix(w.filename, ext)
+	matches, err := filepath.Glob(base + "_*" + ext + ".gz")
+	if err != nil || len(matches) <= maxKeep {
+		return
+	}
+	sort.Strings(matches) // 文件名含时间戳，字典序即时间序
+	for _, old := range matches[:len(matches)-maxKeep] {
+		if err := os.Remove(old); err != nil {
+			os.Stderr.WriteString("Log rotation: failed to prune old archive " + old + ": " + err.Error() + "\n")
+		}
+	}
 }
 
 // Write implements io.Writer (non-blocking, can drop)

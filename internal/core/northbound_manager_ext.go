@@ -21,6 +21,8 @@ func (nm *NorthboundManager) UpsertHTTPConfig(cfg model.HTTPConfig) error {
 	}
 
 	var oldCfg model.HTTPConfig
+	oldHTTP := make([]model.HTTPConfig, len(nm.config.HTTP))
+	copy(oldHTTP, nm.config.HTTP)
 	found := false
 	for i, c := range nm.config.HTTP {
 		if c.ID == cfg.ID {
@@ -62,6 +64,7 @@ func (nm *NorthboundManager) UpsertHTTPConfig(cfg model.HTTPConfig) error {
 	}
 
 	if err := nm.saveConfig(); err != nil {
+		nm.config.HTTP = oldHTTP // P1-3 防护：落盘失败回滚内存
 		return err
 	}
 
@@ -278,6 +281,8 @@ func (nm *NorthboundManager) DeleteHTTPConfig(id string) error {
 		delete(nm.httpClients, id)
 	}
 
+	oldConfigs := make([]model.HTTPConfig, len(nm.config.HTTP))
+	copy(oldConfigs, nm.config.HTTP)
 	newConfigs := []model.HTTPConfig{}
 	for _, c := range nm.config.HTTP {
 		if c.ID != id {
@@ -286,7 +291,11 @@ func (nm *NorthboundManager) DeleteHTTPConfig(id string) error {
 	}
 	nm.config.HTTP = newConfigs
 
-	return nm.saveConfig()
+	if err := nm.saveConfig(); err != nil {
+		nm.config.HTTP = oldConfigs // P1-3 防护：落盘失败回滚内存
+		return err
+	}
+	return nil
 }
 
 // PublishHTTP sends a raw payload via a specific HTTP config
@@ -320,6 +329,8 @@ func (nm *NorthboundManager) UpsertMQTTConfig(cfg model.MQTTConfig) (string, err
 	}
 
 	var oldCfg model.MQTTConfig
+	oldMQTT := make([]model.MQTTConfig, len(nm.config.MQTT))
+	copy(oldMQTT, nm.config.MQTT)
 	found := false
 	for i, c := range nm.config.MQTT {
 		if c.ID == cfg.ID {
@@ -362,6 +373,7 @@ func (nm *NorthboundManager) UpsertMQTTConfig(cfg model.MQTTConfig) (string, err
 	}
 
 	if err := nm.saveConfig(); err != nil {
+		nm.config.MQTT = oldMQTT // P1-3 防护：落盘失败回滚内存
 		return "", err
 	}
 

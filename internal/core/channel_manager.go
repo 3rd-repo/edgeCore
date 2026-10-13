@@ -666,6 +666,18 @@ func (cm *ChannelManager) UpdateChannel(ch *model.Channel) error {
 		}
 	}
 
+	// P0 数据丢失防护（2026-10-13 审查）：
+	// JSON 反序列化下 devices 字段缺失 = nil，显式 "devices": [] 才是空数组。
+	// nil 表示调用方未提供设备列表（典型：只改通道名/配置的 PUT 请求），
+	// 此时保留旧设备集合，防止整条通道的设备与点位被静默清空并落盘。
+	if ch.Devices == nil && hasExisting && existing != nil {
+		preserved := existing.DeepCopy()
+		ch.Devices = preserved.Devices
+		zap.L().Info("UpdateChannel: devices field absent in request, preserving existing devices",
+			zap.String("channel_id", ch.ID),
+			zap.Int("devices", len(ch.Devices)))
+	}
+
 	// 设备 ID 规范化 + 通道内去重 + 全局唯一性校验
 	// UpdateChannel 场景：StopChannel 不清理 cm.deviceIDs，需在检查前先把旧设备 ID 临时移除，
 	// 否则自身设备 ID 会被"豁免"但状态脏（重命名 A→B 后 A 残留）。
@@ -2607,6 +2619,53 @@ func (cm *ChannelManager) AddPoints(channelID, deviceID string, points []model.P
 	return cm.restartDeviceLocked(ch, idx)
 }
 
+// ReplacePoints 原子替换设备全部点位（导入 replace_mode 专用）。
+// P1 防护（2026-10-13 审查）：此前 handler 先 RemovePoints（立即落盘）再
+// AddPoints，AddPoints 失败时设备点位已为空且已持久化——"先清后写、失败留空"。
+// 现在全部校验通过后单次替换 + 单次落盘，失败不留空。
+func (cm *ChannelManager) ReplacePoints(channelID, deviceID string, points []model.Point) error {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+
+	ch, ok := cm.channels[channelID]
+	if !ok {
+		return fmt.Errorf("channel not found")
+	}
+
+	idx := -1
+	for i, d := range ch.Devices {
+		if d.ID == deviceID {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return fmt.Errorf("device not found")
+	}
+
+	dev := &ch.Devices[idx]
+
+	// 先全部校验（含批内 ID 去重），任何失败都不改动内存
+	seen := make(map[string]struct{}, len(points))
+	for i := range points {
+		if err := model.EnsurePointID(&points[i]); err != nil {
+			return err
+		}
+		if _, dup := seen[points[i].ID]; dup {
+			return fmt.Errorf("duplicate point %s in import batch", points[i].ID)
+		}
+		seen[points[i].ID] = struct{}{}
+		if err := cm.validatePoint(ch, &points[i]); err != nil {
+			return err
+		}
+	}
+
+	// 校验全过 → 单次替换 + 单次落盘
+	dev.Points = points
+
+	return cm.restartDeviceLocked(ch, idx)
+}
+
 // pointUpdateRequiresDeviceRestart 判断点位变更是否影响南向采集任务（需重启设备）。
 // 仅元数据变更（如读写权限、名称、单位）时返回 false，此时只重建北向 OPC UA 服务。
 func pointUpdateRequiresDeviceRestart(before, after model.Point) bool {
@@ -2850,7 +2909,22 @@ func (cm *ChannelManager) UpdateDevice(channelID string, dev *model.Device) erro
 	// 保留已有点位和存储配置 — 设备 PUT 更新仅修改设备级字段
 	//（名称、启用、间隔、配置），点位和存储通过独立 API 管理。
 	dev.Points = oldDev.Points
+
+	// P0 数据丢失防护（2026-10-13 审查）：JSON 反序列化下 config 字段缺失 = nil。
+	// nil 表示调用方未提供连接配置（IP/端口/从站号等），保留旧配置，
+	// 防止设备连接参数被静默抹空。
+	if dev.Config == nil {
+		dev.Config = oldDev.Config
+	}
+
 	if dev.Storage.Enable == false && oldDev.Storage.Enable {
+		dev.Storage = oldDev.Storage
+	}
+	// 存储保护条件补漏：请求提供了 storage.enable=true 但漏掉策略字段时，
+	// 残缺对象会覆盖旧的存储配置。半缺（interval/max_records/strategy 任一为
+	// 零值而旧值非零）时回退到旧 Storage，避免历史存储策略被静默改变。
+	if dev.Storage.Enable && oldDev.Storage.Enable &&
+		(dev.Storage.Interval <= 0 || dev.Storage.MaxRecords <= 0) {
 		dev.Storage = oldDev.Storage
 	}
 
@@ -3003,12 +3077,26 @@ func (cm *ChannelManager) saveChannels() error {
 	go func() {
 		cm.saveWriteMu.Lock()
 		defer cm.saveWriteMu.Unlock()
-		if seq != cm.saveSeq.Load() {
-			return // 已有更新的快照排队/落盘，跳过本份，防止旧数据覆盖新数据
-		}
-		if err := cm.saveFunc(channels); err != nil {
-			zap.L().Error("Failed to save config (in-memory state may diverge from DB)",
-				zap.Error(err))
+		// 失败重试（指数退避）：落盘失败后内存与 DB 分叉是永久性的，
+		// 重试是唯一自愈机会。bbolt 短暂 IO 故障（磁盘满抖动等）可被吸收。
+		const maxAttempts = 3
+		backoff := time.Second
+		for attempt := 1; attempt <= maxAttempts; attempt++ {
+			if seq != cm.saveSeq.Load() {
+				return // 已有更新的快照排队/落盘，跳过本份，防止旧数据覆盖新数据
+			}
+			if err := cm.saveFunc(channels); err != nil {
+				zap.L().Error("Failed to save config (in-memory state may diverge from DB)",
+					zap.Int("attempt", attempt),
+					zap.Int("max_attempts", maxAttempts),
+					zap.Error(err))
+				if attempt < maxAttempts {
+					time.Sleep(backoff)
+					backoff *= 2
+					continue
+				}
+			}
+			return
 		}
 	}()
 	return nil
@@ -3250,16 +3338,10 @@ func (cm *ChannelManager) OnBACnetAddressDiscovered(deviceKey, ip string, port i
 			})
 
 			if cm.saveFunc != nil {
-				channels := make([]model.Channel, 0, len(cm.channels))
-				for _, c := range cm.channels {
-					channels = append(channels, *c)
-				}
-				if err := cm.saveFunc(channels); err != nil {
-					zap.L().Warn("Failed to persist BACnet address update",
-						zap.String("device", deviceKey),
-						zap.Error(err),
-					)
-				}
+				// 复用 saveChannels()：包含隔离区视图、DeepCopy、saveWriteMu/saveSeq
+				// latest-wins 保护。此前这里私有浅拷贝 cm.channels 直写 saveFunc，
+				// 会把隔离区通道从 DB 静默删除（P0 数据丢失，2026-10-13）。
+				_ = cm.saveChannels()
 			}
 
 			zap.L().Info("Persisted BACnet device address update",

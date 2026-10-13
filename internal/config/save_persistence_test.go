@@ -1,8 +1,8 @@
 package config
 
 import (
+	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -251,8 +251,12 @@ func TestEdgeRulesPersistThroughSaveConfig(t *testing.T) {
 	}
 }
 
-// TestSaveConfigRejectsEmptyDeviceID 空设备 ID 应在保存前被拒绝，避免 bbolt key required。
-func TestSaveConfigRejectsEmptyDeviceID(t *testing.T) {
+// TestSaveConfigToleratesEmptyDeviceID 空 ID 设备被容错剔除，保存整体成功
+// 且不污染 Devices bucket。
+// 语义变更（2026-10-13 数据丢失审查，P1-4）：旧实现 all-or-nothing——单条
+// 脏数据让全系统配置都无法落盘（所有配置节共用一个全量写入口）。新实现
+// 隔离非法条目（落 dropped 副本后剔除），持久化管道永远可用。
+func TestSaveConfigToleratesEmptyDeviceID(t *testing.T) {
 	cm, cleanup := newDBConfigManager(t)
 	defer cleanup()
 
@@ -266,13 +270,43 @@ func TestSaveConfigRejectsEmptyDeviceID(t *testing.T) {
 				{ID: "", Name: "", Points: []model.Point{{ID: "pt-1", Name: "pt-1"}}},
 			},
 		},
+		{
+			ID:       "ch-good",
+			Name:     "Good Channel",
+			Protocol: "modbus-tcp",
+			Devices: []model.Device{
+				{ID: "dev-1", Name: "Dev 1", Points: []model.Point{{ID: "pt-1", Name: "pt-1"}}},
+			},
+		},
 	}
 
-	err := cm.SaveConfig(cfg)
-	if err == nil {
-		t.Fatal("expected SaveConfig to fail for empty device ID")
+	if err := cm.SaveConfig(cfg); err != nil {
+		t.Fatalf("SaveConfig should tolerate invalid entries instead of failing: %v", err)
 	}
-	if !strings.Contains(err.Error(), "device ID or name is required") {
-		t.Fatalf("unexpected error: %v", err)
+
+	// 合法设备必须已持久化
+	reloaded, err := LoadConfigFromDB(cm.db)
+	if err != nil {
+		t.Fatalf("reload after tolerant save: %v", err)
+	}
+	var found bool
+	for _, ch := range reloaded.Channels {
+		for _, d := range ch.Devices {
+			if d.ID == "dev-1" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatal("valid device dev-1 missing after tolerant save")
+	}
+
+	// dropped 副本必须存在
+	matches, _ := filepath.Glob(filepath.Join("data", "dropped-devices-*.json"))
+	if len(matches) == 0 {
+		t.Fatal("expected a dropped-devices dump file for the invalid entry")
+	}
+	for _, m := range matches {
+		_ = os.Remove(m) // 清理，避免影响其他测试
 	}
 }

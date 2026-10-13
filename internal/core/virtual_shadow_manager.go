@@ -16,6 +16,11 @@ type VirtualShadowManager struct {
 	shadow  *ShadowCore
 	configs []model.VirtualShadowDeviceConfig
 	saveFn  func([]model.VirtualShadowDeviceConfig) error
+	// loadFailed：启动加载失败时置位。虚拟影子在 DB 是单 key 全量 blob，
+	// 加载失败后若放行 persist()，用户添加 1 条新影子就会把"只含 1 条"
+	// 的列表整体覆盖写回，原有全部影子配置永久丢失（P1-5，2026-10-13 审查，
+	// 与通道隔离区事故同构）。置位期间 persist 拒绝覆盖，直到 Load 成功。
+	loadFailed bool
 }
 
 func NewVirtualShadowManager(vse *VirtualShadowEngine, cm *ChannelManager, shadow *ShadowCore, saveFn func([]model.VirtualShadowDeviceConfig) error) *VirtualShadowManager {
@@ -30,6 +35,7 @@ func NewVirtualShadowManager(vse *VirtualShadowEngine, cm *ChannelManager, shado
 func (m *VirtualShadowManager) Load(configs []model.VirtualShadowDeviceConfig) {
 	m.mu.Lock()
 	m.configs = append([]model.VirtualShadowDeviceConfig(nil), configs...)
+	m.loadFailed = false // 成功加载即解除 persist 守卫
 	m.mu.Unlock()
 
 	for _, cfg := range configs {
@@ -38,6 +44,14 @@ func (m *VirtualShadowManager) Load(configs []model.VirtualShadowDeviceConfig) {
 		}
 		_ = m.applyOne(cfg)
 	}
+}
+
+// MarkLoadFailed 启动加载失败时由 main 调用：置位 persist 守卫，
+// 防止后续全量覆盖把 DB 中的影子配置静默清空。
+func (m *VirtualShadowManager) MarkLoadFailed() {
+	m.mu.Lock()
+	m.loadFailed = true
+	m.mu.Unlock()
 }
 
 // ReloadAll 在通道/设备/点位拓扑变更后，重新应用所有已启用的虚拟影子设备。
@@ -296,6 +310,12 @@ func (m *VirtualShadowManager) applyOne(cfg model.VirtualShadowDeviceConfig) err
 func (m *VirtualShadowManager) persist(configs []model.VirtualShadowDeviceConfig) error {
 	if m.saveFn == nil {
 		return nil
+	}
+	m.mu.RLock()
+	guarded := m.loadFailed
+	m.mu.RUnlock()
+	if guarded {
+		return fmt.Errorf("virtual shadow load failed at startup; persist blocked to prevent overwriting existing configs with partial state")
 	}
 	return m.saveFn(configs)
 }
