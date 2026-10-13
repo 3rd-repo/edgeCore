@@ -489,13 +489,15 @@ func (d *BACnetDriver) ReadPoints(ctx context.Context, points []model.Point) (ma
 		return map[string]model.Value{}, nil
 	}
 
-	d.mu.Lock()
+	// 本段只读 idMap/deviceContexts，用 RLock 即可；持写锁跨 ReadMu 等待会
+	// 阻塞所有并发读者（Health/SetDeviceConfig/其他设备的 ReadPoints）。
+	d.mu.RLock()
 	targetID := -1
 	sID := points[0].DeviceID
 
 	for i := 1; i < len(points); i++ {
 		if points[i].DeviceID != sID {
-			d.mu.Unlock()
+			d.mu.RUnlock()
 			return nil, fmt.Errorf("mixed device IDs in ReadPoints: expected %s, got %s (point: %s)", sID, points[i].DeviceID, points[i].Name)
 		}
 	}
@@ -511,7 +513,7 @@ func (d *BACnetDriver) ReadPoints(ctx context.Context, points []model.Point) (ma
 
 	devCtx, exists := d.deviceContexts[targetID]
 	if !exists || devCtx.Scheduler == nil {
-		d.mu.Unlock()
+		d.mu.RUnlock()
 		if targetID != -1 {
 			d.scheduleDeviceRecovery(targetID)
 		}
@@ -520,8 +522,7 @@ func (d *BACnetDriver) ReadPoints(ctx context.Context, points []model.Point) (ma
 
 	scheduler := devCtx.Scheduler
 	devCtx.ReadMu.Lock()
-	d.mu.Unlock()
-	defer devCtx.ReadMu.Unlock()
+	d.mu.RUnlock()
 
 	// raw, err — scheduler.Read returns (map[pointID]Value, error)
 	// 部分成功时 err==nil 且 raw 中包含成功读取的点位。
@@ -529,7 +530,13 @@ func (d *BACnetDriver) ReadPoints(ctx context.Context, points []model.Point) (ma
 	// safeSchedulerRead wraps scheduler.Read with panic recovery —
 	// BACnet library may panic on malformed UDP responses or concurrent
 	// access races, which would crash the process if unrecovered.
+	// safeSchedulerRead 内部 recover panic，本调用不会穿透 panic，
+	// 因此下方紧随其后的 ReadMu.Unlock 是安全的。
 	raw, err := safeSchedulerRead(scheduler, ctx, points)
+	// 关键：在触碰 d.mu 之前先释放 ReadMu。若持 ReadMu 再去取 575/598 行的
+	// d.mu.Lock()，会与另一路径“持 d.mu(写) 等 ReadMu”形成 AB-BA 死锁：
+	// 真机 soak 曾因此 155+ goroutine 卡在 Health/ReadPoints，/api/channels 挂死。
+	devCtx.ReadMu.Unlock()
 	now := time.Now()
 	results := make(map[string]model.Value, len(points))
 	failed := 0

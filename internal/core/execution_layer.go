@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"time"
 
@@ -51,8 +52,11 @@ type ExecutionLayer struct {
 	protocolRegistry  map[string]ProtocolType
 	driverRegistry    map[string]driver.Driver
 	circuitBreaker    *DriverCircuitBreaker
-	mu                sync.RWMutex
-	stopCh            chan struct{}
+	// lastDriverCfgs 记录每个 deviceKey 最近一次下发给驱动的配置，
+	// 用于在读热路径跳过未变化的 SetDeviceConfig（见 readPoints）。
+	lastDriverCfgs map[string]map[string]any
+	mu             sync.RWMutex
+	stopCh         chan struct{}
 }
 
 func NewExecutionLayer() *ExecutionLayer {
@@ -64,6 +68,7 @@ func NewExecutionLayer() *ExecutionLayer {
 		protocolRegistry: make(map[string]ProtocolType),
 		driverRegistry:   make(map[string]driver.Driver),
 		circuitBreaker:   NewDriverCircuitBreaker(),
+		lastDriverCfgs:   make(map[string]map[string]any),
 		stopCh:           make(chan struct{}),
 	}
 }
@@ -79,12 +84,15 @@ func (el *ExecutionLayer) RegisterDriver(deviceKey string, d driver.Driver) {
 	defer el.mu.Unlock()
 	el.driverRegistry[deviceKey] = d
 	el.serialManager.RegisterDriver(deviceKey, d)
+	// 驱动实例更换（新建/重连）后，缓存的“已下发配置”作废，必须重新下发。
+	delete(el.lastDriverCfgs, deviceKey)
 }
 
 func (el *ExecutionLayer) UnregisterDriver(deviceKey string) {
 	el.mu.Lock()
 	defer el.mu.Unlock()
 	delete(el.driverRegistry, deviceKey)
+	delete(el.lastDriverCfgs, deviceKey)
 	el.serialManager.RemoveContext(deviceKey)
 	el.circuitBreaker.Reset(deviceKey)
 }
@@ -493,7 +501,7 @@ func (el *ExecutionLayer) readPoints(d driver.Driver, task *ScanTask, ctx contex
 				cfg["group_threshold"] = gap
 			}
 		}
-		if len(cfg) > 0 {
+		if len(cfg) > 0 && el.driverCfgChanged(d, task.DeviceKey, cfg) {
 			if err := d.SetDeviceConfig(cfg); err != nil {
 				return nil, err
 			}
@@ -513,6 +521,24 @@ func (el *ExecutionLayer) readPoints(d driver.Driver, task *ScanTask, ctx contex
 		el.recordPointResults(task, values)
 	}
 	return values, err
+}
+
+// driverCfgChanged 判断 cfg 相对该 deviceKey 上一次成功下发给驱动的配置是否变化。
+// SetDeviceConfig 在多数驱动里是写锁重操作（如 BACnet 的 d.mu.Lock），读热路径
+// 每次读点全量下发会制造大量无意义的写锁竞争；配置未变化时跳过下发。
+// 驱动实例更换（RegisterDriver/UnregisterDriver）时缓存失效，保证新驱动能收到初始配置。
+func (el *ExecutionLayer) driverCfgChanged(d driver.Driver, deviceKey string, cfg map[string]any) bool {
+	el.mu.Lock()
+	defer el.mu.Unlock()
+	if el.lastDriverCfgs == nil {
+		el.lastDriverCfgs = make(map[string]map[string]any)
+	}
+	last, ok := el.lastDriverCfgs[deviceKey]
+	if ok && reflect.DeepEqual(last, cfg) {
+		return false
+	}
+	el.lastDriverCfgs[deviceKey] = cfg
+	return true
 }
 
 func isModbusProtocol(protocol string) bool {
