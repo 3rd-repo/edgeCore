@@ -8,6 +8,7 @@ import (
 	"github.com/anviod/edgeCore/internal/storage"
 
 	"go.etcd.io/bbolt"
+	"go.uber.org/zap"
 )
 
 var saveMu sync.Mutex
@@ -163,6 +164,30 @@ func LoadConfigFromDB(db *bbolt.DB) (*Config, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to load channels: %w", err)
 	}
+
+	// 启动加载兜底：历史版本缺陷可能在持久化数据中留下通道内重复设备 ID
+	// （例如设备改名时未同步 ID、复制设备时 ID 冲突）。AddChannel 对此 Fail-Fast
+	// 会拒收整条通道，导致该通道采集在重启后全部消失。
+	// 这里在加载层按"保留首个"去重并告警，不改变 API 层（AddChannel/UpdateChannel）
+	// 的严格校验；后续任一次通道保存都会把去重结果写回 DB，实现数据自愈。
+	for i := range channels {
+		seen := make(map[string]struct{}, len(channels[i].Devices))
+		kept := channels[i].Devices[:0]
+		for _, dev := range channels[i].Devices {
+			if _, dup := seen[dev.ID]; dup {
+				zap.L().Warn("dropping duplicate device in persisted channel",
+					zap.String("channel_id", channels[i].ID),
+					zap.String("channel_name", channels[i].Name),
+					zap.String("device_id", dev.ID),
+					zap.String("device_name", dev.Name))
+				continue
+			}
+			seen[dev.ID] = struct{}{}
+			kept = append(kept, dev)
+		}
+		channels[i].Devices = kept
+	}
+
 	cfg.Channels = channels
 
 	devices, err := configStore.LoadAllDevices()
