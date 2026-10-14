@@ -3045,8 +3045,10 @@ func (s *Server) exportRuntimeDBArchive(c *fiber.Ctx) error {
 	return c.Send(data)
 }
 
-// importConfigDBArchive 从 tar.gz 导入配置数据库
+// importConfigDBArchive 导入配置数据库（恢复备份统一入口）
 // POST /api/data/import-config-db
+// 接受 tar.gz 归档（export-config-db 产物）或原始备份文件
+//（BackupConfigDB 产出的 .db / .sqlite），按魔数自动识别、跨后端导入。
 func (s *Server) importConfigDBArchive(c *fiber.Ctx) error {
 	if s.storage == nil {
 		return c.Status(503).JSON(fiber.Map{"error": "storage not available"})
@@ -3077,7 +3079,7 @@ func (s *Server) importConfigDBArchive(c *fiber.Ctx) error {
 		forceOverwrite = c.Query("force_overwrite") == "true" || c.Query("force_overwrite") == "1"
 	}
 
-	result, err := s.storage.ImportConfigDBArchive(archiveData, storage.ImportArchiveOptions{
+	result, err := s.storage.ImportConfigDBData(archiveData, storage.ImportArchiveOptions{
 		ForceOverwrite: forceOverwrite,
 	})
 	if err != nil {
@@ -3164,27 +3166,20 @@ func (s *Server) pullRemoteConfig(c *fiber.Ctx) error {
 }
 
 // compactRuntimeWithStats 压缩 runtime.db 并返回压缩前后文件大小。
+// 容量统计走 DBDiskSize（含 sqlite 后端 WAL/SHM 附件），两后端口径一致。
 func (s *Server) compactRuntimeWithStats() (fiber.Map, error) {
 	if s.storage == nil {
 		return nil, fmt.Errorf("storage not available")
 	}
 
 	runtimePath := s.storage.GetRuntimePath()
-	beforeInfo, _ := os.Stat(runtimePath)
-	beforeSize := int64(0)
-	if beforeInfo != nil {
-		beforeSize = beforeInfo.Size()
-	}
+	beforeSize, _ := storage.DBDiskSize(runtimePath)
 
 	if err := s.storage.CompactRuntimeDB(); err != nil {
 		return nil, err
 	}
 
-	afterInfo, _ := os.Stat(runtimePath)
-	afterSize := int64(0)
-	if afterInfo != nil {
-		afterSize = afterInfo.Size()
-	}
+	afterSize, _ := storage.DBDiskSize(runtimePath)
 
 	saved := beforeSize - afterSize
 	if saved < 0 {

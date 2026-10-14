@@ -59,9 +59,9 @@
       <a-collapse :bordered="false" class="help-collapse mb-block">
         <a-collapse-item header="导入/导出说明" key="import-export-help">
           <div class="help-content">
-            <p><strong>导出配置数据库</strong>：将 <code>config.db</code> 打包为 <code>.tar.gz</code> 下载，包含通道、设备、点位、北向、边缘规则、系统设置等。</p>
-            <p><strong>导出运行时数据</strong>：将 <code>runtime.db</code> 打包为 <code>.tar.gz</code> 下载，包含实时值快照、缓存、历史数据等（不含配置）。</p>
-            <p><strong>导入配置数据库</strong>：上传此前导出的配置库 <code>.tar.gz</code> 文件，将覆盖当前网关的采集与业务配置。</p>
+            <p><strong>导出配置数据库</strong>：将当前配置库打包为 <code>.tar.gz</code> 下载，包含通道、设备、点位、北向、边缘规则、系统设置等。</p>
+            <p><strong>导出运行时数据</strong>：将运行时库打包为 <code>.tar.gz</code> 下载，包含实时值快照、缓存、历史数据等（不含配置）。</p>
+            <p><strong>导入配置库 / 恢复备份</strong>：上传此前导出的配置库 <code>.tar.gz</code> 归档，或「备份到本地目录」生成的原始备份文件（<code>.db</code> / <code>.sqlite</code>）。系统按文件头自动识别格式，bbolt 与 SQLite 两种引擎的备份可以互相恢复。</p>
             <p><strong>强制拉取远程覆盖本地</strong>：从另一台 edgeCore 网关 HTTP 拉取其配置库并<strong>完全覆盖</strong>本机（含用户密码与端口）。</p>
             <ul>
               <li>普通导入时<strong>不会覆盖</strong>本机已有<strong>用户账号与密码</strong>，避免导入后无法登录。</li>
@@ -86,13 +86,13 @@
         </a-button>
         <a-upload
           :show-file-list="false"
-          accept=".tar.gz,.tgz"
+          accept=".tar.gz,.tgz,.db,.sqlite"
           :custom-request="handleImportConfigDB"
           :disabled="importConfigLoading"
         >
           <a-button type="outline" status="warning" :loading="importConfigLoading">
             <template #icon><icon-upload /></template>
-            导入配置数据库
+            导入配置库 / 恢复备份
           </a-button>
         </a-upload>
         <a-checkbox v-model="importForceOverwrite" class="force-overwrite-check">
@@ -533,7 +533,7 @@ const handleExportRuntimeDB = async () => {
 const handleImportConfigDB = async (option) => {
   const file = option?.fileItem?.file
   if (!file) {
-    showMessage('请选择 .tar.gz 配置文件', 'warning')
+    showMessage('请选择 .tar.gz 归档或 .db / .sqlite 备份文件', 'warning')
     return
   }
 

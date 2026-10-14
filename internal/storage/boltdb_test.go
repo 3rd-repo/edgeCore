@@ -7,7 +7,6 @@ import (
 	"testing"
 
 	"github.com/anviod/edgeCore/internal/model"
-	"go.etcd.io/bbolt"
 )
 
 func TestIsConfigBucket(t *testing.T) {
@@ -95,18 +94,14 @@ func TestClearBucket_Functionality(t *testing.T) {
 	}
 	defer s.Close()
 
-	err = s.GetDB().Update(func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte("DataCache"))
-		if err != nil {
+	err = s.GetDB().Update(func(tx KVTx) error {
+		if err := tx.CreateBucketIfNotExists("DataCache"); err != nil {
 			return err
 		}
-		if err := b.Put([]byte("key1"), []byte("value1")); err != nil {
+		if err := tx.Put("DataCache", []byte("key1"), []byte("value1")); err != nil {
 			return err
 		}
-		if err := b.Put([]byte("key2"), []byte("value2")); err != nil {
-			return err
-		}
-		return nil
+		return tx.Put("DataCache", []byte("key2"), []byte("value2"))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -117,14 +112,12 @@ func TestClearBucket_Functionality(t *testing.T) {
 	}
 
 	var count int
-	err = s.GetDB().View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte("DataCache"))
-		if b != nil {
-			b.ForEach(func(k, v []byte) error {
-				count++
-				return nil
-			})
+	err = s.GetDB().View(func(tx KVTx) error {
+		n, err := tx.CountKeys("DataCache")
+		if err != nil {
+			return err
 		}
+		count = n
 		return nil
 	})
 	if err != nil {
@@ -149,20 +142,20 @@ func TestClearAllRuntimeBuckets(t *testing.T) {
 	defer s.Close()
 
 	populate := func() error {
-		return s.GetDB().Update(func(tx *bbolt.Tx) error {
-			if b, err := tx.CreateBucketIfNotExists([]byte("WAL")); err != nil {
+		return s.GetDB().Update(func(tx KVTx) error {
+			if err := tx.CreateBucketIfNotExists("WAL"); err != nil {
 				return err
-			} else if err := b.Put([]byte("w1"), []byte("v1")); err != nil {
-				return err
-			}
-			if b, err := tx.CreateBucketIfNotExists([]byte("device_history_dev1")); err != nil {
-				return err
-			} else if err := b.Put([]byte("t1"), []byte("h1")); err != nil {
+			} else if err := tx.Put("WAL", []byte("w1"), []byte("v1")); err != nil {
 				return err
 			}
-			if b, err := tx.CreateBucketIfNotExists([]byte(legacyShadowWALBucket)); err != nil {
+			if err := tx.CreateBucketIfNotExists("device_history_dev1"); err != nil {
 				return err
-			} else if err := b.Put([]byte("wal-1"), []byte("payload")); err != nil {
+			} else if err := tx.Put("device_history_dev1", []byte("t1"), []byte("h1")); err != nil {
+				return err
+			}
+			if err := tx.CreateBucketIfNotExists(legacyShadowWALBucket); err != nil {
+				return err
+			} else if err := tx.Put(legacyShadowWALBucket, []byte("wal-1"), []byte("payload")); err != nil {
 				return err
 			}
 			return nil
@@ -186,23 +179,25 @@ func TestClearAllRuntimeBuckets(t *testing.T) {
 		t.Fatal("expected at least one bucket cleared")
 	}
 
-	err = s.GetDB().View(func(tx *bbolt.Tx) error {
-		if tx.Bucket([]byte(legacyShadowWALBucket)) != nil {
-			t.Error("legacy shadow_wal bucket should be removed")
+	err = s.GetDB().View(func(tx KVTx) error {
+		names, err := tx.Buckets()
+		if err != nil {
+			return err
 		}
-		return tx.ForEach(func(name []byte, b *bbolt.Bucket) error {
-			count := 0
-			if err := b.ForEach(func(k, v []byte) error {
-				count++
-				return nil
-			}); err != nil {
+		for _, name := range names {
+			if name == legacyShadowWALBucket {
+				t.Error("legacy shadow_wal bucket should be removed")
+				continue
+			}
+			count, err := tx.CountKeys(name)
+			if err != nil {
 				return err
 			}
 			if count != 0 {
 				t.Errorf("bucket %s should be empty, got %d records", name, count)
 			}
-			return nil
-		})
+		}
+		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -287,12 +282,11 @@ func TestDropLegacyShadowWALBucket(t *testing.T) {
 	}
 	defer s.Close()
 
-	err = s.GetDB().Update(func(tx *bbolt.Tx) error {
-		b, err := tx.CreateBucketIfNotExists([]byte(legacyShadowWALBucket))
-		if err != nil {
+	err = s.GetDB().Update(func(tx KVTx) error {
+		if err := tx.CreateBucketIfNotExists(legacyShadowWALBucket); err != nil {
 			return err
 		}
-		return b.Put([]byte("wal-1"), []byte("payload"))
+		return tx.Put(legacyShadowWALBucket, []byte("wal-1"), []byte("payload"))
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -302,9 +296,12 @@ func TestDropLegacyShadowWALBucket(t *testing.T) {
 		t.Fatalf("dropLegacyShadowWALBucket failed: %v", err)
 	}
 
-	err = s.GetDB().View(func(tx *bbolt.Tx) error {
-		if tx.Bucket([]byte(legacyShadowWALBucket)) != nil {
-			t.Error("legacy shadow_wal bucket should be removed")
+	err = s.GetDB().View(func(tx KVTx) error {
+		names, _ := tx.Buckets()
+		for _, name := range names {
+			if name == legacyShadowWALBucket {
+				t.Error("legacy shadow_wal bucket should be removed")
+			}
 		}
 		return nil
 	})
@@ -322,9 +319,12 @@ func TestDropLegacyShadowWALBucket(t *testing.T) {
 	}
 	defer s2.Close()
 
-	err = s2.GetDB().View(func(tx *bbolt.Tx) error {
-		if tx.Bucket([]byte(legacyShadowWALBucket)) != nil {
-			t.Error("NewStorage should drop legacy shadow_wal on open")
+	err = s2.GetDB().View(func(tx KVTx) error {
+		names, _ := tx.Buckets()
+		for _, name := range names {
+			if name == legacyShadowWALBucket {
+				t.Error("NewStorage should drop legacy shadow_wal on open")
+			}
 		}
 		return nil
 	})

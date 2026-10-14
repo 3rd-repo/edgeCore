@@ -6,8 +6,6 @@ import (
 	"strings"
 
 	"github.com/anviod/edgeCore/internal/model"
-
-	"go.etcd.io/bbolt"
 )
 
 const (
@@ -26,11 +24,12 @@ const (
 )
 
 type ConfigStore struct {
-	db *bbolt.DB
+	db KVDB
 }
 
-func NewConfigStore(db *bbolt.DB) (*ConfigStore, error) {
-	err := db.Update(func(tx *bbolt.Tx) error {
+// NewConfigStore 基于 KVDB 后端构建配置仓库（bbolt / SQLite 双后端共用）。
+func NewConfigStore(db KVDB) (*ConfigStore, error) {
+	err := db.Update(func(tx KVTx) error {
 		buckets := []string{
 			BucketConfigVersion,
 			BucketChannels,
@@ -44,17 +43,14 @@ func NewConfigStore(db *bbolt.DB) (*ConfigStore, error) {
 			BucketAICopilot,
 		}
 		for _, bucket := range buckets {
-			if _, err := tx.CreateBucketIfNotExists([]byte(bucket)); err != nil {
+			if err := tx.CreateBucketIfNotExists(bucket); err != nil {
 				return fmt.Errorf("failed to create bucket %s: %w", bucket, err)
 			}
 		}
 
-		b := tx.Bucket([]byte(BucketConfigVersion))
-		if b != nil {
-			currentVersion := b.Get([]byte(ConfigVersionKey))
-			if currentVersion == nil {
-				return b.Put([]byte(ConfigVersionKey), []byte(ConfigVersionValue))
-			}
+		currentVersion := tx.Get(BucketConfigVersion, []byte(ConfigVersionKey))
+		if currentVersion == nil {
+			return tx.Put(BucketConfigVersion, []byte(ConfigVersionKey), []byte(ConfigVersionValue))
 		}
 		return nil
 	})
@@ -110,12 +106,8 @@ func (cs *ConfigStore) LoadDevice(deviceID string) (*model.Device, error) {
 
 func (cs *ConfigStore) LoadAllDevices() (map[string]model.Device, error) {
 	result := make(map[string]model.Device)
-	err := cs.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(BucketDevices))
-		if b == nil {
-			return nil
-		}
-		return b.ForEach(func(k, v []byte) error {
+	err := cs.db.View(func(tx KVTx) error {
+		return tx.ForEach(BucketDevices, func(k, v []byte) error {
 			var device model.Device
 			if err := json.Unmarshal(v, &device); err == nil {
 				result[string(k)] = device
@@ -127,12 +119,8 @@ func (cs *ConfigStore) LoadAllDevices() (map[string]model.Device, error) {
 }
 
 func (cs *ConfigStore) DeleteDevice(deviceID string) error {
-	return cs.db.Update(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(BucketDevices))
-		if b == nil {
-			return nil
-		}
-		return b.Delete([]byte(deviceID))
+	return cs.db.Update(func(tx KVTx) error {
+		return tx.Delete(BucketDevices, []byte(deviceID))
 	})
 }
 
@@ -219,42 +207,26 @@ func (cs *ConfigStore) LoadUsers() ([]model.UserConfig, error) {
 
 func (cs *ConfigStore) HasConfigData() (bool, error) {
 	var hasData bool
-	err := cs.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(BucketChannels))
-		if b == nil {
-			return nil
-		}
-		data := b.Get([]byte("channels"))
-		if data != nil && len(data) > 0 {
+	err := cs.db.View(func(tx KVTx) error {
+		data := tx.Get(BucketChannels, []byte("channels"))
+		if len(data) > 0 {
 			hasData = true
 			return nil
 		}
 
-		b = tx.Bucket([]byte(BucketDevices))
-		if b != nil {
-			cursor := b.Cursor()
-			k, _ := cursor.First()
-			if k != nil {
-				hasData = true
-				return nil
-			}
+		cursor := tx.Cursor(BucketDevices)
+		if k, _ := cursor.First(); k != nil {
+			hasData = true
+			return nil
 		}
 
-		b = tx.Bucket([]byte(BucketNorthbound))
-		if b != nil {
-			data = b.Get([]byte("northbound"))
-			if data != nil && len(data) > 0 {
-				hasData = true
-				return nil
-			}
+		if data = tx.Get(BucketNorthbound, []byte("northbound")); len(data) > 0 {
+			hasData = true
+			return nil
 		}
 
-		b = tx.Bucket([]byte(BucketEdgeRules))
-		if b != nil {
-			data = b.Get([]byte("edge_rules"))
-			if data != nil && len(data) > 0 {
-				hasData = true
-			}
+		if data = tx.Get(BucketEdgeRules, []byte("edge_rules")); len(data) > 0 {
+			hasData = true
 		}
 
 		return nil
@@ -264,13 +236,9 @@ func (cs *ConfigStore) HasConfigData() (bool, error) {
 
 func (cs *ConfigStore) HasUsers() (bool, error) {
 	var hasUsers bool
-	err := cs.db.View(func(tx *bbolt.Tx) error {
-		b := tx.Bucket([]byte(BucketUsers))
-		if b == nil {
-			return nil
-		}
-		data := b.Get([]byte("users"))
-		if data != nil && len(data) > 0 {
+	err := cs.db.View(func(tx KVTx) error {
+		data := tx.Get(BucketUsers, []byte("users"))
+		if len(data) > 0 {
 			var users []model.UserConfig
 			if err := json.Unmarshal(data, &users); err == nil && len(users) > 0 {
 				hasUsers = true
@@ -294,7 +262,7 @@ func (cs *ConfigStore) IsSystemInitialized() (bool, error) {
 
 func (cs *ConfigStore) ExportAllConfig() (*ConfigExport, error) {
 	export := &ConfigExport{}
-	err := cs.db.View(func(tx *bbolt.Tx) error {
+	err := cs.db.View(func(tx KVTx) error {
 		if err := loadFromBucket(tx, BucketServer, "server", &export.Server); err != nil {
 			return err
 		}
@@ -317,21 +285,15 @@ func (cs *ConfigStore) ExportAllConfig() (*ConfigExport, error) {
 			return err
 		}
 
-		b := tx.Bucket([]byte(BucketDevices))
-		if b != nil {
-			export.Devices = make(map[string]model.Device)
-			err := b.ForEach(func(k, v []byte) error {
-				var device model.Device
-				if err := json.Unmarshal(v, &device); err == nil {
-					export.Devices[string(k)] = device
-				}
-				return nil
-			})
-			if err != nil {
-				return err
+		export.Devices = make(map[string]model.Device)
+		err := tx.ForEach(BucketDevices, func(k, v []byte) error {
+			var device model.Device
+			if err := json.Unmarshal(v, &device); err == nil {
+				export.Devices[string(k)] = device
 			}
-		}
-		return nil
+			return nil
+		})
+		return err
 	})
 	return export, err
 }
@@ -361,7 +323,7 @@ func (cs *ConfigStore) ImportConfigReplace(export *ConfigExport, opts ImportPres
 		}
 	}
 
-	return cs.db.Update(func(tx *bbolt.Tx) error {
+	return cs.db.Update(func(tx KVTx) error {
 		if err := saveToBucket(tx, BucketServer, "server", export.Server); err != nil {
 			return err
 		}
@@ -384,55 +346,60 @@ func (cs *ConfigStore) ImportConfigReplace(export *ConfigExport, opts ImportPres
 			return err
 		}
 
-		b := tx.Bucket([]byte(BucketDevices))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", BucketDevices)
-		}
-
-		var existingKeys [][]byte
-		if err := b.ForEach(func(k, _ []byte) error {
-			existingKeys = append(existingKeys, append([]byte{}, k...))
-			return nil
-		}); err != nil {
+		if err := replaceDevicesInTx(tx, export.Devices); err != nil {
 			return err
 		}
-		for _, key := range existingKeys {
-			if err := b.Delete(key); err != nil {
-				return err
-			}
-		}
 
-		if export.Devices != nil {
-			for id, device := range export.Devices {
-				key := strings.TrimSpace(id)
-				if key == "" {
-					if err := model.EnsureDeviceID(&device); err != nil {
-						return err
-					}
-					key = device.ID
-				} else {
-					device.ID = key
-				}
-				data, err := json.Marshal(device)
-				if err != nil {
-					return err
-				}
-				if err := b.Put([]byte(key), data); err != nil {
-					return err
-				}
-			}
-		}
-
-		versionBucket := tx.Bucket([]byte(BucketConfigVersion))
-		if versionBucket != nil {
-			return versionBucket.Put([]byte(ConfigVersionKey), []byte(ConfigVersionValue))
-		}
-		return nil
+		return tx.Put(BucketConfigVersion, []byte(ConfigVersionKey), []byte(ConfigVersionValue))
 	})
 }
 
 func (cs *ConfigStore) ImportConfig(export *ConfigExport) error {
-	return cs.db.Update(func(tx *bbolt.Tx) error {
+	return cs.db.Update(func(tx KVTx) error {
+		// P0 数据丢失防护（2026-10-13 审查）：nil 字段 = 导入数据未提供该 section，
+		// 保留 DB 现值，绝不写成 null/空覆盖。缺 channels 字段的导入文件
+		// 曾经把整批通道清空；缺 users 则登录直接失效。
+		if export.Channels == nil {
+			if cur, err := cs.loadChannelsFrom(tx); err == nil {
+				export.Channels = cur
+			}
+		}
+		if export.Users == nil {
+			if data := tx.Get(BucketUsers, []byte("users")); data != nil {
+				var cur []model.UserConfig
+				if json.Unmarshal(data, &cur) == nil {
+					export.Users = cur
+				}
+			}
+		}
+		if export.EdgeRules == nil {
+			if data := tx.Get(BucketEdgeRules, []byte("edge_rules")); data != nil {
+				var cur []model.EdgeRule
+				if json.Unmarshal(data, &cur) == nil {
+					export.EdgeRules = cur
+				}
+			}
+		}
+		if export.VirtualShadows == nil {
+			if data := tx.Get(BucketVirtualShadows, []byte("virtual_shadows")); data != nil {
+				var cur []model.VirtualShadowDeviceConfig
+				if json.Unmarshal(data, &cur) == nil {
+					export.VirtualShadows = cur
+				}
+			}
+		}
+		if export.Devices == nil {
+			existing := make(map[string]model.Device)
+			_ = tx.ForEach(BucketDevices, func(k, v []byte) error {
+				var dev model.Device
+				if json.Unmarshal(v, &dev) == nil {
+					existing[string(k)] = dev
+				}
+				return nil
+			})
+			export.Devices = existing
+		}
+
 		if err := saveToBucket(tx, BucketServer, "server", export.Server); err != nil {
 			return err
 		}
@@ -456,41 +423,18 @@ func (cs *ConfigStore) ImportConfig(export *ConfigExport) error {
 		}
 
 		if export.Devices != nil {
-			b := tx.Bucket([]byte(BucketDevices))
-			if b == nil {
-				return fmt.Errorf("bucket %s not found", BucketDevices)
-			}
-			for id, device := range export.Devices {
-				key := strings.TrimSpace(id)
-				if key == "" {
-					if err := model.EnsureDeviceID(&device); err != nil {
-						return err
-					}
-					key = device.ID
-				} else {
-					device.ID = key
-				}
-				data, err := json.Marshal(device)
-				if err != nil {
-					return err
-				}
-				if err := b.Put([]byte(key), data); err != nil {
-					return err
-				}
+			if err := upsertDevicesInTx(tx, export.Devices); err != nil {
+				return err
 			}
 		}
 
-		b := tx.Bucket([]byte(BucketConfigVersion))
-		if b != nil {
-			return b.Put([]byte(ConfigVersionKey), []byte(ConfigVersionValue))
-		}
-		return nil
+		return tx.Put(BucketConfigVersion, []byte(ConfigVersionKey), []byte(ConfigVersionValue))
 	})
 }
 
 func (cs *ConfigStore) SaveAllConfig(server model.ServerConfig, channels []model.Channel, devices []model.Device,
 	northbound model.NorthboundConfig, edgeRules []model.EdgeRule, system model.SystemConfig, users []model.UserConfig) error {
-	return cs.db.Update(func(tx *bbolt.Tx) error {
+	return cs.db.Update(func(tx KVTx) error {
 		if err := saveToBucket(tx, BucketServer, "server", server); err != nil {
 			return err
 		}
@@ -515,16 +459,12 @@ func (cs *ConfigStore) SaveAllConfig(server model.ServerConfig, channels []model
 			return err
 		}
 
-		b := tx.Bucket([]byte(BucketDevices))
-		if b == nil {
-			return fmt.Errorf("bucket %s not found", BucketDevices)
-		}
 		for _, device := range normalized {
 			data, err := json.Marshal(device)
 			if err != nil {
 				return err
 			}
-			if err := b.Put([]byte(device.ID), data); err != nil {
+			if err := tx.Put(BucketDevices, []byte(device.ID), data); err != nil {
 				return err
 			}
 		}
@@ -545,40 +485,84 @@ type ConfigExport struct {
 }
 
 func (cs *ConfigStore) saveJSON(bucketName, key string, data interface{}) error {
-	return cs.db.Update(func(tx *bbolt.Tx) error {
+	return cs.db.Update(func(tx KVTx) error {
 		return saveToBucket(tx, bucketName, key, data)
 	})
 }
 
 func (cs *ConfigStore) loadJSON(bucketName, key string, result interface{}) error {
-	return cs.db.View(func(tx *bbolt.Tx) error {
+	return cs.db.View(func(tx KVTx) error {
 		return loadFromBucket(tx, bucketName, key, result)
 	})
 }
 
-func saveToBucket(tx *bbolt.Tx, bucketName, key string, data interface{}) error {
+// loadChannelsFrom 在指定事务内读取通道列表（nil-safe）。
+func (cs *ConfigStore) loadChannelsFrom(tx KVTx) ([]model.Channel, error) {
+	var channels []model.Channel
+	if err := loadFromBucket(tx, BucketChannels, "channels", &channels); err != nil {
+		return nil, err
+	}
+	return channels, nil
+}
+
+func saveToBucket(tx KVTx, bucketName, key string, data interface{}) error {
 	if strings.TrimSpace(key) == "" {
 		return fmt.Errorf("config key is required for bucket %s", bucketName)
-	}
-	b := tx.Bucket([]byte(bucketName))
-	if b == nil {
-		return fmt.Errorf("bucket %s not found", bucketName)
 	}
 	bytes, err := json.Marshal(data)
 	if err != nil {
 		return err
 	}
-	return b.Put([]byte(key), bytes)
+	return tx.Put(bucketName, []byte(key), bytes)
 }
 
-func loadFromBucket(tx *bbolt.Tx, bucketName, key string, result interface{}) error {
-	b := tx.Bucket([]byte(bucketName))
-	if b == nil {
-		return nil
-	}
-	data := b.Get([]byte(key))
+func loadFromBucket(tx KVTx, bucketName, key string, result interface{}) error {
+	data := tx.Get(bucketName, []byte(key))
 	if data == nil {
 		return nil
 	}
 	return json.Unmarshal(data, result)
+}
+
+// upsertDevicesInTx 把 export.Devices 原样写入 Devices bucket（不清理旧键）。
+func upsertDevicesInTx(tx KVTx, devices map[string]model.Device) error {
+	if devices == nil {
+		return nil
+	}
+	for id, device := range devices {
+		key := strings.TrimSpace(id)
+		if key == "" {
+			if err := model.EnsureDeviceID(&device); err != nil {
+				return err
+			}
+			key = device.ID
+		} else {
+			device.ID = key
+		}
+		data, err := json.Marshal(device)
+		if err != nil {
+			return err
+		}
+		if err := tx.Put(BucketDevices, []byte(key), data); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// replaceDevicesInTx 清空 Devices bucket 后整体写入（导入 replace 语义）。
+func replaceDevicesInTx(tx KVTx, devices map[string]model.Device) error {
+	var existingKeys [][]byte
+	if err := tx.ForEach(BucketDevices, func(k, _ []byte) error {
+		existingKeys = append(existingKeys, append([]byte{}, k...))
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, key := range existingKeys {
+		if err := tx.Delete(BucketDevices, key); err != nil {
+			return err
+		}
+	}
+	return upsertDevicesInTx(tx, devices)
 }

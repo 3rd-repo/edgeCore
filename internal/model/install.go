@@ -5,6 +5,7 @@ type InstallConfig struct {
 	Username        string `json:"username"`
 	Password        string `json:"password"`
 	StoragePath     string `json:"storagePath"`
+	StorageBackend  string `json:"storageBackend,omitempty"` // "bbolt"（默认）或 "sqlite"
 	GatewayName     string `json:"gatewayName"`
 	GatewayLocation string `json:"gatewayLocation"`
 	DeviceSerial    string `json:"deviceSerial"`

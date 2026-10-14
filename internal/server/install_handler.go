@@ -393,12 +393,16 @@ func (s *Server) executeInstall(cfg *model.InstallConfig) {
 	addLog("配置参数验证通过")
 
 	step(2, "初始化数据库")
-	if err := s.initStorage(); err != nil {
+	backend := cfg.StorageBackend
+	if backend == "" {
+		backend = storage.BackendBbolt
+	}
+	if err := s.initStorageWithBackend(backend); err != nil {
 		addLog(fmt.Sprintf("初始化数据库失败: %v", err))
 		setStatus("failed", err.Error())
 		return
 	}
-	addLog("数据库初始化成功")
+	addLog(fmt.Sprintf("数据库初始化成功（存储引擎: %s）", backend))
 
 	step(3, "保存系统配置")
 	if err := s.saveSystemConfigToDB(cfg); err != nil {
@@ -441,12 +445,16 @@ func (s *Server) executeInstall(cfg *model.InstallConfig) {
 }
 
 func (s *Server) initStorage() error {
+	return s.initStorageWithBackend(storage.ReadBackendChoice("data"))
+}
+
+func (s *Server) initStorageWithBackend(backend string) error {
 	if s.storage != nil {
 		return nil
 	}
 
 	dataDir := "data"
-	store, err := storage.NewStorage(dataDir)
+	store, err := storage.NewStorageWithBackend(dataDir, backend)
 	if err != nil {
 		return fmt.Errorf("创建数据库失败: %w", err)
 	}
@@ -553,6 +561,13 @@ func validateInstallConfig(cfg *model.InstallConfig) error {
 	}
 	if cfg.StoragePath == "" {
 		return fmt.Errorf("数据存储路径不能为空")
+	}
+	// 存储后端：空值兼容旧客户端（默认 bbolt）
+	if cfg.StorageBackend == "" {
+		cfg.StorageBackend = storage.BackendBbolt
+	}
+	if cfg.StorageBackend != storage.BackendBbolt && cfg.StorageBackend != storage.BackendSQLite {
+		return fmt.Errorf("不支持的存储引擎: %s（可选 bbolt / sqlite）", cfg.StorageBackend)
 	}
 	if cfg.GatewayName == "" {
 		return fmt.Errorf("网关名称不能为空")

@@ -357,6 +357,9 @@ var connectionErrorHints = []string{
 	"network unreachable", "no route to host", "broken pipe", "dial ",
 	"tls handshake", "cannot assign requested address", "i/o timeout",
 	"request timed out", "timeout", "modbus: not connected",
+	// Modbus 异常码 11：网关目标设备无响应——链路/设备级失联，
+	// 绝不能与异常码 2（点位配置错误）混为一谈。
+	"gateway target device failed to respond",
 }
 
 func isConnectionError(err error) bool {

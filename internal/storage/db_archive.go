@@ -12,14 +12,18 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
-
-	"go.etcd.io/bbolt"
 )
 
 const (
-	ArchiveManifestName = "manifest.json"
-	ConfigDBEntryName   = "config.db"
-	RuntimeDBEntryName  = "runtime.db"
+	ArchiveManifestName   = "manifest.json"
+	ConfigDBEntryName     = "config.db"
+	ConfigDBEntrySQLite   = "config.sqlite"
+	RuntimeDBEntryName    = "runtime.db"
+	RuntimeDBEntrySQLite  = "runtime.sqlite"
+
+	// bbolt meta 页魔数 0xED0CDAED（小端）位于文件头 page header（16 字节）之后。
+	bboltMagicPrefix = "\xED\xDA\x0C\xED"
+	sqliteMagic      = "SQLite format 3\x00"
 )
 
 // ArchiveManifest describes export package metadata.
@@ -51,33 +55,67 @@ type ImportPreserveOptions struct {
 	PreserveServerPort bool
 }
 
-// ExportDBAsTarGz exports a bbolt database file as a tar.gz archive.
+// ExportDBAsTarGz exports a database file as a tar.gz archive.
 // Used when the database file is not already open (e.g. tests).
+// 按文件头魔数自动识别 bbolt / SQLite 格式，与本地后端无关。
 func ExportDBAsTarGz(dbPath, entryName, archiveType string) ([]byte, string, error) {
-	db, err := bbolt.Open(dbPath, 0600, &bbolt.Options{
-		Timeout:  30 * time.Second,
-		ReadOnly: true,
-	})
+	db, err := openKVFileByMagic(dbPath)
 	if err != nil {
 		return nil, "", fmt.Errorf("failed to open database: %w", err)
 	}
 	defer db.Close()
 
-	return exportOpenDBAsTarGz(db, dbPath, entryName, archiveType)
+	return exportKVAsTarGz(db, dbPath, entryName, archiveType)
 }
 
-// exportOpenDBAsTarGz snapshots an open bbolt database into tar.gz.
-func exportOpenDBAsTarGz(db *bbolt.DB, sourcePath, entryName, archiveType string) ([]byte, string, error) {
+// openKVFileByMagic 按文件头魔数打开磁盘上任意后端的数据库文件（跨后端读取）。
+func openKVFileByMagic(dbPath string) (KVDB, error) {
+	head := make([]byte, 32)
+	f, err := os.Open(dbPath)
+	if err != nil {
+		return nil, err
+	}
+	n, readErr := io.ReadFull(f, head)
+	closeErr := f.Close()
+	if readErr != nil && readErr != io.ErrUnexpectedEOF {
+		return nil, fmt.Errorf("failed to read database header: %w", readErr)
+	}
+	if closeErr != nil {
+		return nil, closeErr
+	}
+	head = head[:n]
+
+	if isSQLiteDB(head) {
+		return openSQLiteKV(dbPath)
+	}
+	if isBoltDB(head) {
+		return openBoltKV(dbPath, false)
+	}
+	return nil, fmt.Errorf("unrecognized database format: %s", dbPath)
+}
+
+// exportKVAsTarGz snapshots an open KV database into tar.gz.
+// 快照统一走 KVDB.BackupTo（bbolt: WriteTo / sqlite: VACUUM INTO），
+// 与具体后端解耦。
+func exportKVAsTarGz(db KVDB, sourcePath, entryName, archiveType string) ([]byte, string, error) {
 	if strings.TrimSpace(entryName) == "" {
 		return nil, "", fmt.Errorf("archive entry name is required")
 	}
 
-	var dbBytes bytes.Buffer
-	if err := db.View(func(tx *bbolt.Tx) error {
-		_, err := tx.WriteTo(&dbBytes)
-		return err
-	}); err != nil {
+	tmpFile, err := os.CreateTemp("", "edgeCore-snapshot-*")
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to create snapshot temp file: %w", err)
+	}
+	tmpPath := tmpFile.Name()
+	_ = tmpFile.Close()
+	defer os.Remove(tmpPath)
+
+	if err := db.BackupTo(tmpPath); err != nil {
 		return nil, "", fmt.Errorf("failed to snapshot database: %w", err)
+	}
+	dbBytes, err := os.ReadFile(tmpPath)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to read database snapshot: %w", err)
 	}
 
 	manifest, err := json.Marshal(ArchiveManifest{
@@ -91,7 +129,7 @@ func exportOpenDBAsTarGz(db *bbolt.DB, sourcePath, entryName, archiveType string
 	}
 
 	archiveData, err := buildTarGz(map[string][]byte{
-		entryName:           dbBytes.Bytes(),
+		entryName:           dbBytes,
 		ArchiveManifestName: manifest,
 	})
 	if err != nil {
@@ -171,6 +209,16 @@ func extractTarGz(data []byte) (map[string][]byte, error) {
 	return files, nil
 }
 
+// isSQLiteDB / isBoltDB 按文件头魔数识别数据库格式。
+// SQLite 魔数位于偏移 0；bbolt 魔数位于 page header（16 字节）之后。
+func isSQLiteDB(data []byte) bool {
+	return len(data) >= len(sqliteMagic) && string(data[:len(sqliteMagic)]) == sqliteMagic
+}
+
+func isBoltDB(data []byte) bool {
+	return len(data) >= 20 && string(data[16:20]) == bboltMagicPrefix
+}
+
 func findArchiveEntry(files map[string][]byte, entryName string) ([]byte, error) {
 	if content, ok := files[entryName]; ok {
 		return content, nil
@@ -186,27 +234,69 @@ func findArchiveEntry(files map[string][]byte, entryName string) ([]byte, error)
 	return nil, fmt.Errorf("archive does not contain %s", entryName)
 }
 
-// ExportConfigDBArchive exports config.db as tar.gz.
+// ExportConfigDBArchive exports the config database as tar.gz（条目名随后端）。
 func (s *Storage) ExportConfigDBArchive() ([]byte, string, error) {
-	return exportOpenDBAsTarGz(s.configDB, s.configDB.Path(), ConfigDBEntryName, "config")
+	entryName := ConfigDBEntryName
+	if s.backend == BackendSQLite {
+		entryName = ConfigDBEntrySQLite
+	}
+	return exportKVAsTarGz(s.configDB, s.configDB.Path(), entryName, "config")
 }
 
-// ExportRuntimeDBArchive exports runtime.db as tar.gz.
+// ExportRuntimeDBArchive exports the runtime database as tar.gz。
 func (s *Storage) ExportRuntimeDBArchive() ([]byte, string, error) {
-	return exportOpenDBAsTarGz(s.runtimeDB, s.runtimeDB.Path(), RuntimeDBEntryName, "runtime")
+	entryName := RuntimeDBEntryName
+	if s.backend == BackendSQLite {
+		entryName = RuntimeDBEntrySQLite
+	}
+	return exportKVAsTarGz(s.runtimeDB, s.runtimeDB.Path(), entryName, "runtime")
+}
+
+// ImportConfigDBData 从上传数据导入配置（统一入口，"恢复备份"走这里）。
+// data 可以是：
+//   - tar.gz 归档（export-config-db 产物，内含 config.db / config.sqlite 条目）
+//   - 原始配置库备份文件（BackupConfigDB 产出的 .db / .sqlite）
+//
+// 按文件头魔数自动识别格式，与本地后端无关（bbolt 系统可恢复 SQLite 备份，反之亦然）。
+// By default existing user accounts/passwords and server port are preserved.
+func (s *Storage) ImportConfigDBData(data []byte, opts ImportArchiveOptions) (*ConfigImportResult, error) {
+	if len(data) == 0 {
+		return nil, fmt.Errorf("uploaded data is empty")
+	}
+	if isSQLiteDB(data) || isBoltDB(data) {
+		return s.importConfigFromDBBytes(data, opts, "")
+	}
+	return s.ImportConfigDBArchive(data, opts)
 }
 
 // ImportConfigDBArchive imports configuration from a tar.gz archive.
 // By default existing user accounts/passwords and server port are preserved.
+// 归档内容按魔数自动识别 bbolt / SQLite 格式，与本地后端无关（跨后端导入）。
 func (s *Storage) ImportConfigDBArchive(archiveData []byte, opts ImportArchiveOptions) (*ConfigImportResult, error) {
 	files, err := extractTarGz(archiveData)
 	if err != nil {
 		return nil, err
 	}
 
-	dbContent, err := findArchiveEntry(files, ConfigDBEntryName)
-	if err != nil {
-		return nil, err
+	var dbContent []byte
+	for _, entry := range []string{ConfigDBEntryName, ConfigDBEntrySQLite} {
+		if content, err := findArchiveEntry(files, entry); err == nil {
+			dbContent = content
+			break
+		}
+	}
+	if dbContent == nil {
+		return nil, fmt.Errorf("archive does not contain a config database entry")
+	}
+
+	return s.importConfigFromDBBytes(dbContent, opts, "")
+}
+
+// importConfigFromDBBytes 把一段配置库内容（原始 bbolt / SQLite 文件字节）
+// 中的配置导入当前配置库，全程 KVDB 接口，与后端无关。
+func (s *Storage) importConfigFromDBBytes(dbContent []byte, opts ImportArchiveOptions, remoteSource string) (*ConfigImportResult, error) {
+	if !isSQLiteDB(dbContent) && !isBoltDB(dbContent) {
+		return nil, fmt.Errorf("unrecognized config database format")
 	}
 
 	tempDir, err := os.MkdirTemp("", "edgeCore-config-import-*")
@@ -215,20 +305,28 @@ func (s *Storage) ImportConfigDBArchive(archiveData []byte, opts ImportArchiveOp
 	}
 	defer os.RemoveAll(tempDir)
 
-	tempDBPath := filepath.Join(tempDir, ConfigDBEntryName)
+	// 按魔数判定格式，落到对应扩展名
+	tempDBName := ConfigDBEntryName
+	if isSQLiteDB(dbContent) {
+		tempDBName = ConfigDBEntrySQLite
+	}
+	tempDBPath := filepath.Join(tempDir, tempDBName)
 	if err := os.WriteFile(tempDBPath, dbContent, 0600); err != nil {
 		return nil, fmt.Errorf("failed to write temp database: %w", err)
 	}
 
-	importDB, err := bbolt.Open(tempDBPath, 0600, &bbolt.Options{
-		Timeout: 30 * time.Second,
-	})
+	var importKV KVDB
+	if isSQLiteDB(dbContent) {
+		importKV, err = openSQLiteKV(tempDBPath)
+	} else {
+		importKV, err = openBoltKV(tempDBPath, false)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("invalid config database in archive: %w", err)
 	}
-	defer importDB.Close()
+	defer importKV.Close()
 
-	importStore, err := NewConfigStore(importDB)
+	importStore, err := NewConfigStore(importKV)
 	if err != nil {
 		return nil, fmt.Errorf("invalid config database structure: %w", err)
 	}
@@ -278,6 +376,7 @@ func (s *Storage) ImportConfigDBArchive(archiveData []byte, opts ImportArchiveOp
 		PreservedPort:  preservedPort,
 		DeviceCount:    len(exportData.Devices),
 		ChannelCount:   len(exportData.Channels),
+		RemoteSource:   remoteSource,
 	}, nil
 }
 

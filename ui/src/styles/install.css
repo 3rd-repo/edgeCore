@@ -221,6 +221,87 @@
   color: var(--edgeCore-error);
 }
 
+/* 存储引擎引导卡片 */
+.install-wrapper .engine-guide {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--space-2);
+}
+
+.install-wrapper .engine-guide__card {
+  padding: 12px 14px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md, 8px);
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.install-wrapper .engine-guide__card:hover {
+  border-color: var(--primary);
+}
+
+.install-wrapper .engine-guide__card--active {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 15%, transparent);
+}
+
+.install-wrapper .engine-guide__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.install-wrapper .engine-guide__name {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary, var(--text));
+}
+
+.install-wrapper .engine-guide__tag {
+  font-size: 11px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  white-space: nowrap;
+}
+
+.install-wrapper .engine-guide__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.install-wrapper .engine-guide__list li {
+  position: relative;
+  padding-left: 14px;
+  font-size: 12px;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+
+.install-wrapper .engine-guide__list li::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 8px;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--text-tertiary);
+}
+
+@media (max-width: 720px) {
+  .install-wrapper .engine-guide {
+    grid-template-columns: 1fr;
+  }
+}
+
 .install-wrapper .password-rules {
   display: flex;
   flex-wrap: wrap;

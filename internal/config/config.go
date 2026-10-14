@@ -11,7 +11,6 @@ import (
 	"github.com/anviod/edgeCore/internal/model"
 	"github.com/anviod/edgeCore/internal/storage"
 
-	"go.etcd.io/bbolt"
 	"go.uber.org/zap"
 )
 
@@ -20,7 +19,7 @@ var saveMu sync.Mutex
 // ConfigManager 管理配置的加载与持久化（运行时以数据库为唯一数据源）。
 type ConfigManager struct {
 	Config *Config
-	db     *bbolt.DB
+	db     storage.KVDB
 	useDB  bool
 	// onReload：Reload() 成功后同步回调，通知持有旧 *Config 引用/快照的
 	// 组件重新挂载（P0 数据丢失防护：否则导入/恢复后旧内存态会随下一次
@@ -55,7 +54,7 @@ func NewConfigManagerWithEmptyConfig() *ConfigManager {
 }
 
 // NewConfigManagerWithDB 创建一个使用数据库存储配置的配置管理器
-func NewConfigManagerWithDB(db *bbolt.DB) (*ConfigManager, error) {
+func NewConfigManagerWithDB(db storage.KVDB) (*ConfigManager, error) {
 	configStore, err := storage.NewConfigStore(db)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config store: %w", err)
@@ -116,7 +115,7 @@ func (cm *ConfigManager) GetConfig() *Config {
 }
 
 // AttachDB 将运行时数据库绑定到配置管理器（安装完成后使用）
-func (cm *ConfigManager) AttachDB(db *bbolt.DB) {
+func (cm *ConfigManager) AttachDB(db storage.KVDB) {
 	cm.db = db
 	cm.useDB = true
 }
@@ -157,7 +156,7 @@ func (cm *ConfigManager) SaveConfig(cfg *Config) error {
 	return fmt.Errorf("configuration persistence requires database attachment")
 }
 
-func LoadConfigFromDB(db *bbolt.DB) (*Config, error) {
+func LoadConfigFromDB(db storage.KVDB) (*Config, error) {
 	configStore, err := storage.NewConfigStore(db)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create config store: %w", err)
@@ -289,7 +288,7 @@ func dumpDroppedEntries(kind string, entries any) {
 		zap.String("dump", path))
 }
 
-func SaveConfigToDB(db *bbolt.DB, cfg *Config) error {
+func SaveConfigToDB(db storage.KVDB, cfg *Config) error {
 	configStore, err := storage.NewConfigStore(db)
 	if err != nil {
 		return fmt.Errorf("failed to create config store: %w", err)

@@ -6,7 +6,6 @@ import (
 	_ "net/http/pprof"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"syscall"
@@ -69,21 +68,18 @@ func main() {
 	logger.InitLogger("info", "", nil)
 	zap.L().Info("Starting Industrial Edge Gateway...")
 
-	// 1. 初始化流程：只需检测 config.db 是否存在且为空
+	// 1. 初始化流程：检测任一后端的配置库是否存在且为空
+	// （bbolt: config.db / sqlite: config.sqlite，后端选择记录在 data/storage.meta）
 	dataDir := "data"
 	if err := os.MkdirAll(dataDir, 0755); err != nil {
 		zap.L().Fatal("Failed to create data directory", zap.String("dir", dataDir), zap.Error(err))
 	}
 
-	configPath := filepath.Join(dataDir, "config.db")
-
-	configExists := false
-	if _, err := os.Stat(configPath); err == nil {
-		configExists = true
-	}
+	backend := storage.ReadBackendChoice(dataDir)
+	configExists := storage.IsBackendInstalled(dataDir)
 
 	zap.L().Info("Database check",
-		zap.String("config_db", configPath),
+		zap.String("backend", backend),
 		zap.Bool("config_exists", configExists))
 
 	var store *storage.Storage
@@ -93,8 +89,8 @@ func main() {
 	var err error
 
 	if configExists {
-		zap.L().Info("Initializing storage...", zap.String("dir", dataDir))
-		store, err = storage.NewStorage(dataDir)
+		zap.L().Info("Initializing storage...", zap.String("dir", dataDir), zap.String("backend", backend))
+		store, err = storage.NewStorageWithBackend(dataDir, backend)
 		if err != nil {
 			zap.L().Fatal("Failed to init storage", zap.Error(err))
 		}

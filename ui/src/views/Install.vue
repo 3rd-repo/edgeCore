@@ -203,9 +203,55 @@
               </label>
               <div class="info-value">
                 <IconFolder />
-                <span>data (配置文件: data/config.db)</span>
+                <span>data (配置文件: {{ formData.storageBackend === 'sqlite' ? 'data/config.sqlite' : 'data/config.db' }})</span>
               </div>
               <div class="form-hint">系统将自动在此目录下创建数据库文件，无需手动选择</div>
+            </div>
+
+            <div class="form-group">
+              <label class="form-label">
+                <IconFolder class="label-icon" />
+                存储引擎
+              </label>
+              <div class="input-group">
+                <a-select v-model="formData.storageBackend" size="large">
+                  <a-select-option value="bbolt">bbolt（默认 · 单文件 B+树）</a-select-option>
+                  <a-select-option value="sqlite">SQLite（modernc 纯 Go · 行级存储）</a-select-option>
+                </a-select>
+              </div>
+              <div class="engine-guide">
+                <div
+                  class="engine-guide__card"
+                  :class="{ 'engine-guide__card--active': formData.storageBackend === 'bbolt' }"
+                  @click="formData.storageBackend = 'bbolt'"
+                >
+                  <div class="engine-guide__head">
+                    <span class="engine-guide__name">bbolt</span>
+                    <span class="engine-guide__tag">默认</span>
+                  </div>
+                  <ul class="engine-guide__list">
+                    <li>历史回放和范围扫描快约 35 倍，适合经常导出设备历史、按时间段查询的场景</li>
+                    <li>全部数据收在单个文件里，备份只要拷走一个文件</li>
+                    <li>单点写入偏慢（约为 SQLite 的 1/20），点位多、采集周期短时磁盘压力明显</li>
+                  </ul>
+                </div>
+                <div
+                  class="engine-guide__card"
+                  :class="{ 'engine-guide__card--active': formData.storageBackend === 'sqlite' }"
+                  @click="formData.storageBackend = 'sqlite'"
+                >
+                  <div class="engine-guide__head">
+                    <span class="engine-guide__name">SQLite</span>
+                    <span class="engine-guide__tag">写入快</span>
+                  </div>
+                  <ul class="engine-guide__list">
+                    <li>单点高频写入快约 20 倍，适合点位多、采集周期短的写密集场景</li>
+                    <li>空间回收（Compact）快约 24 倍，且回收期间不停写</li>
+                    <li>数据目录里除主文件外还有 -wal/-shm 附件，备份时需要一并拷贝</li>
+                  </ul>
+                </div>
+              </div>
+              <div class="form-hint">两种引擎功能完全一致，配置与运行数据都能落库，差别只在读写速度的侧重点上；选择随首次安装固化，之后启动自动沿用，中途更换需走导出、重装、导入流程</div>
             </div>
 
             <div v-if="generalErrors.length > 0" class="error-list">
@@ -316,7 +362,8 @@ const formData = reactive({
   password: '',
   confirmPassword: '',
   gatewayName: '',
-  gatewayLocation: ''
+  gatewayLocation: '',
+  storageBackend: 'bbolt'
 })
 
 const portAvailable = ref(null)
@@ -462,6 +509,7 @@ const handleStartInstall = async () => {
       username: formData.username,
       password: formData.password,
       storagePath: 'data',
+      storageBackend: formData.storageBackend,
       gatewayName: formData.gatewayName,
       gatewayLocation: formData.gatewayLocation,
       deviceSerial: ''

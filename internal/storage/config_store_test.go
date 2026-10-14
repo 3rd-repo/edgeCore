@@ -7,14 +7,13 @@ import (
 	"time"
 
 	"github.com/anviod/edgeCore/internal/model"
-	bolt "go.etcd.io/bbolt"
 )
 
 func TestConfigStoreExportImport(t *testing.T) {
 	tempDir := testOutputDir(t)
 
 	dbPath := filepath.Join(tempDir, "config.db")
-	db, err := bolt.Open(dbPath, 0644, nil)
+	db, err := openBoltKV(dbPath, false)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -121,7 +120,7 @@ func TestConfigStoreExportImport(t *testing.T) {
 	}
 
 	newDBPath := filepath.Join(tempDir, "new_config.db")
-	newDB, err := bolt.Open(newDBPath, 0644, nil)
+	newDB, err := openBoltKV(newDBPath, false)
 	if err != nil {
 		t.Fatalf("Failed to open new database: %v", err)
 	}
@@ -165,7 +164,7 @@ func TestHasUsersAndSystemInitialized(t *testing.T) {
 	tempDir := testOutputDir(t)
 
 	dbPath := filepath.Join(tempDir, "config.db")
-	db, err := bolt.Open(dbPath, 0644, nil)
+	db, err := openBoltKV(dbPath, false)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -258,7 +257,7 @@ func TestSaveAllConfigRejectsEmptyDeviceID(t *testing.T) {
 	tempDir := testOutputDir(t)
 
 	dbPath := filepath.Join(tempDir, "config.db")
-	db, err := bolt.Open(dbPath, 0644, nil)
+	db, err := openBoltKV(dbPath, false)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -301,7 +300,7 @@ func TestHasConfigData_NorthboundBucket(t *testing.T) {
 	tempDir := testOutputDir(t)
 
 	dbPath := filepath.Join(tempDir, "config.db")
-	db, err := bolt.Open(dbPath, 0644, nil)
+	db, err := openBoltKV(dbPath, false)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}
@@ -342,7 +341,7 @@ func TestHasConfigData_EdgeRulesBucket(t *testing.T) {
 	tempDir := testOutputDir(t)
 
 	dbPath := filepath.Join(tempDir, "config.db")
-	db, err := bolt.Open(dbPath, 0644, nil)
+	db, err := openBoltKV(dbPath, false)
 	if err != nil {
 		t.Fatalf("Failed to open database: %v", err)
 	}

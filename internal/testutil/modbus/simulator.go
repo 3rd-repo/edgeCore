@@ -49,8 +49,12 @@ func (h *simulatorHandler) HandleHoldingRegisters(req *mb.HoldingRegistersReques
 	h.sim.mu.Unlock()
 
 	// Blocked slave fails immediately so ScanEngine records task failures.
+	// 故障介质用"网关目标设备无响应"（异常码 11）：它表达设备级失联，
+	// 而非 ErrIllegalDataAddress（异常码 2）——后者在驱动侧已被定义为
+	// "点位配置错误 → 永久跳过"，用它模拟设备宕机会把故障从机的点位
+	// 永久 SKIPPED，掩盖 Quality=Bad 的故障传播路径。
 	if blocked {
-		return nil, mb.ErrIllegalDataAddress
+		return nil, mb.ErrGWTargetFailedToRespond
 	}
 	if latency > 0 {
 		time.Sleep(latency)
