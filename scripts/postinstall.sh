@@ -41,6 +41,13 @@ if command -v systemctl >/dev/null 2>&1; then
     echo "[postinstall] Enabling service..."
     systemctl enable edgeCore || true
 
+    # 证书轮换 timer（每月触发，脚本内 14 天提前量幂等；非必需，失败不影响安装）
+    if [ -f /etc/systemd/system/edgeCore-cert-rotate.timer ]; then
+        echo "[postinstall] Enabling certificate rotation timer..."
+        chmod +x /usr/local/bin/edgeCore/scripts/cert-rotate.sh 2>/dev/null || true
+        systemctl enable --now edgeCore-cert-rotate.timer || true
+    fi
+
     # 关键：通过 Web UI 升级时，dpkg/postinst 由 edgeCore 进程派生，
     # 运行于 edgeCore.service 的 CGroup 内。直接 systemctl restart 会连同
     # postinst/dpkg 一并终止（dpkg 状态卡在 half-configured，升级误报失败）。

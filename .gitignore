@@ -16,7 +16,7 @@ dist/
 *.out
 .golangci-lint-cache/
 .gomodcache/
-.github/
+# .github/ 必须纳入版本控制：dependabot.yml 与 workflows/ 不提交则 CI/安全扫描不会生效
 build/
 test/
 vendor/

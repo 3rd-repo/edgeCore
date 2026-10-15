@@ -1,13 +1,18 @@
 package opcua
 
 import (
+	"bytes"
 	"context"
+	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
@@ -211,6 +216,14 @@ func (d *OpcUaDriver) SetDeviceConfig(config map[string]any) error {
 	if err != nil {
 		return err
 	}
+
+	// 安全策略/模式需要先经 GetEndpoints 拿到服务器证书与 endpoint 描述，
+	// 因此在 SetDeviceConfig（有完整配置与 endpoint）阶段应用。
+	secOpts, err := d.applySecurityOptions(context.Background(), endpoint, config)
+	if err != nil {
+		return err
+	}
+	opts = append(opts, secOpts...)
 
 	c, err := opcua.NewClient(endpoint, opts...)
 	if err != nil {
@@ -577,53 +590,101 @@ func (d *OpcUaDriver) scheduleReconnect(w *ClientWrapper) {
 	})
 }
 
+// buildClientOptions 构建认证相关选项。
+// 未配置 auth_method 时不追加任何认证选项（保持既有行为，由 gopcua 默认匿名处理）。
 func (d *OpcUaDriver) buildClientOptions(config map[string]any) ([]opcua.Option, error) {
 	opts := []opcua.Option{
 		opcua.RequestTimeout(10 * time.Second),
 		// opcua.SessionTimeout(30 * time.Minute),
 	}
 
-	/*
-		// Security Policy
-		policy, _ := config["security_policy"].(string)
-		if policy == "" {
-			policy = "None"
-		}
-		opts = append(opts, opcua.SecurityPolicy(policy))
-
-		// Security Mode
-		modeStr, _ := config["security_mode"].(string)
-		mode := ua.MessageSecurityModeNone
-		switch modeStr {
-		case "Sign":
-			mode = ua.MessageSecurityModeSign
-		case "SignAndEncrypt":
-			mode = ua.MessageSecurityModeSignAndEncrypt
-		}
-		opts = append(opts, opcua.SecurityMode(mode))
-
-		// Auth Method
-		authMethod, _ := config["auth_method"].(string)
-		switch authMethod {
-		case "UserName":
-			user, _ := config["username"].(string)
-			pass, _ := config["password"].(string)
-			opts = append(opts, opcua.AuthUsername(user, pass))
-		case "Certificate":
-			certFile, _ := config["certificate_file"].(string)
-			keyFile, _ := config["private_key_file"].(string)
-			certBytes, err := os.ReadFile(certFile)
-			if err != nil {
-				return nil, fmt.Errorf("failed to read cert file: %v", err)
-			}
-			opts = append(opts, opcua.AuthCertificate(certBytes))
-			opts = append(opts, opcua.PrivateKeyFile(keyFile))
-		default:
+	authMethod, _ := config["auth_method"].(string)
+	switch authMethod {
+	case "", "Anonymous":
+		if authMethod == "Anonymous" {
 			opts = append(opts, opcua.AuthAnonymous())
 		}
-	*/
+	case "UserName":
+		user, _ := config["username"].(string)
+		pass, _ := config["password"].(string)
+		opts = append(opts, opcua.AuthUsername(user, pass))
+	case "Certificate":
+		certFile, _ := config["certificate_file"].(string)
+		keyFile, _ := config["private_key_file"].(string)
+		if certFile == "" || keyFile == "" {
+			return nil, fmt.Errorf("auth_method=Certificate requires certificate_file and private_key_file")
+		}
+		certBytes, err := os.ReadFile(certFile)
+		if err != nil {
+			return nil, fmt.Errorf("failed to read cert file: %w", err)
+		}
+		certDER, err := parseCertificateBytes(certBytes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid certificate file %s: %w", certFile, err)
+		}
+		// 自行解析私钥而非使用 gopcua 的 PrivateKeyFile：
+		// 后者仅对 .pem 扩展名做 PEM 解码，.key/.txt 等扩展名的 PEM 文件会解析失败。
+		privKey, err := loadRSAPrivateKey(keyFile)
+		if err != nil {
+			return nil, fmt.Errorf("invalid private key file %s: %w", keyFile, err)
+		}
+		opts = append(opts, opcua.Certificate(certDER))
+		opts = append(opts, opcua.PrivateKey(privKey))
+		// X509 身份认证令牌：AuthCertificate 设置会话的 UserIdentityToken，
+		// AuthPrivateKey 设置 UserKey（ActivateSession 的 UserTokenSignature 签名私钥）。
+		// 两者与通道证书/私钥独立，缺一会导致服务端在 ActivateSession 阶段
+		// 返回 BadSecurityChecksFailed。
+		opts = append(opts, opcua.AuthCertificate(certDER))
+		opts = append(opts, opcua.AuthPrivateKey(privKey))
+	default:
+		return nil, fmt.Errorf("invalid auth_method %q (want Anonymous, UserName or Certificate)", authMethod)
+	}
 
 	return opts, nil
+}
+
+// applySecurityOptions 在用户显式配置 security_policy / security_mode 时，
+// 通过 GetEndpoints 发现服务端安全端点并应用 SecurityFromEndpoint
+// （gopcua 建立加密通道需要服务器证书，单独 SecurityPolicy/SecurityMode 选项不够）。
+// 未配置时返回空切片，保持既有自动协商行为。
+func (d *OpcUaDriver) applySecurityOptions(ctx context.Context, endpoint string, config map[string]any) ([]opcua.Option, error) {
+	policy, _ := config["security_policy"].(string)
+	modeStr, _ := config["security_mode"].(string)
+	if policy == "" && modeStr == "" {
+		return nil, nil
+	}
+
+	var mode ua.MessageSecurityMode
+	if modeStr != "" {
+		mode = ua.MessageSecurityModeFromString(modeStr)
+		if mode == ua.MessageSecurityModeInvalid {
+			return nil, fmt.Errorf("invalid security_mode %q (want None, Sign or SignAndEncrypt)", modeStr)
+		}
+	}
+
+	discoverCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	endpoints, err := opcua.GetEndpoints(discoverCtx, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get endpoints for security negotiation: %w", err)
+	}
+	ep, err := opcua.SelectEndpoint(endpoints, policy, mode)
+	if err != nil {
+		return nil, fmt.Errorf("security negotiation for %s failed: %w", endpoint, err)
+	}
+	return []opcua.Option{opcua.SecurityFromEndpoint(ep, authTokenType(config))}, nil
+}
+
+// authTokenType 把 auth_method 映射为 OPC UA UserTokenType。
+func authTokenType(config map[string]any) ua.UserTokenType {
+	switch method, _ := config["auth_method"].(string); method {
+	case "UserName":
+		return ua.UserTokenTypeUserName
+	case "Certificate":
+		return ua.UserTokenTypeCertificate
+	default:
+		return ua.UserTokenTypeAnonymous
+	}
 }
 
 func (d *OpcUaDriver) ReadPoints(ctx context.Context, points []model.Point) (map[string]model.Value, error) {
@@ -2914,4 +2975,55 @@ func castValue(val any, dataType string) (any, error) {
 	}
 
 	return val, nil
+}
+
+// parseCertificateBytes accepts PEM ("-----BEGIN CERTIFICATE-----") or raw DER
+// encoded X.509 certificates and returns the DER bytes required by gopcua.
+func parseCertificateBytes(data []byte) ([]byte, error) {
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("-----BEGIN")) {
+		for {
+			block, rest := pem.Decode(trimmed)
+			if block == nil {
+				return nil, fmt.Errorf("no CERTIFICATE block found in PEM data")
+			}
+			if block.Type == "CERTIFICATE" {
+				return block.Bytes, nil
+			}
+			trimmed = bytes.TrimSpace(rest)
+		}
+	}
+	if _, err := x509.ParseCertificate(trimmed); err != nil {
+		return nil, fmt.Errorf("not a DER certificate: %w", err)
+	}
+	return trimmed, nil
+}
+
+// loadRSAPrivateKey loads an RSA private key from a PEM (PKCS#1 "RSA PRIVATE KEY"
+// or PKCS#8 "PRIVATE KEY") or raw DER encoded file, regardless of file extension.
+func loadRSAPrivateKey(path string) (*rsa.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	trimmed := bytes.TrimSpace(data)
+	if bytes.HasPrefix(trimmed, []byte("-----BEGIN")) {
+		block, _ := pem.Decode(trimmed)
+		if block == nil {
+			return nil, fmt.Errorf("no PEM block found")
+		}
+		trimmed = block.Bytes
+	}
+	if key, err := x509.ParsePKCS1PrivateKey(trimmed); err == nil {
+		return key, nil
+	}
+	key, err := x509.ParsePKCS8PrivateKey(trimmed)
+	if err != nil {
+		return nil, fmt.Errorf("not a PKCS#1 or PKCS#8 RSA private key: %w", err)
+	}
+	rsaKey, ok := key.(*rsa.PrivateKey)
+	if !ok {
+		return nil, fmt.Errorf("private key type %T is not RSA", key)
+	}
+	return rsaKey, nil
 }

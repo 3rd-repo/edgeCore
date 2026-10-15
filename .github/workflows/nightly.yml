@@ -1,0 +1,178 @@
+# Nightly：长时 soak / 全量 integration / benchmark，产物归档便于回溯
+#
+# 触发：每工作日 18:00 UTC（北京时间次日 02:00）+ 手动
+# 产物：测试日志、benchstat 基准数据、soak 指标，保留 14 天
+#
+# 可选自托管 runner：仓库设置中注册 label 为 [self-hosted, edgecore-nightly] 的
+# runner 后，把下方 runs-on 换成 'edgecore-nightly' 即可复用现场 PLC 环境。
+name: Nightly
+
+on:
+  schedule:
+    # 每日 18:00 UTC
+    - cron: '0 18 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      soak_duration:
+        description: 'Soak duration (e.g. 30s, 10m, 1h)'
+        required: false
+        default: '10m'
+      skip_bench:
+        description: 'Skip benchmark (true/false)'
+        required: false
+        default: 'false'
+
+permissions:
+  contents: read
+
+env:
+  SOAK_DURATION: ${{ github.event.inputs.soak_duration || '10m' }}
+
+jobs:
+  integration:
+    name: Integration tests (real servers)
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Install dependencies
+        run: go mod download
+
+      # 非 short 模式：包含 OPC UA 内嵌真实 server 的安全链路集成测试等
+      - name: Run integration tests
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test ./internal/integration/ -count=1 -timeout 30m -v 2>&1 | tee integration.log
+
+      - name: Upload integration test logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: integration-logs
+          path: integration.log
+          retention-days: 14
+
+  soak:
+    name: Soak stability (configurable duration)
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Install dependencies
+        run: go mod download
+
+      # SOAK_DURATION 可调（手动触发时经 workflow_dispatch 输入）；
+      # 72h 长 soak 仍走手动 make test-soak，不适合 nightly
+      - name: Run soak test
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 SOAK_DURATION=${SOAK_DURATION} go test ./internal/integration/ -run TestSoak -count=1 -timeout 80m -v 2>&1 | tee soak.log
+
+      - name: Upload soak logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: soak-logs
+          path: soak.log
+          retention-days: 14
+
+  bench:
+    name: Benchmark (Q3 10k tags)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Install dependencies
+        run: go mod download
+
+      - name: Run Q3 benchmark
+        id: bench
+        if: github.event.inputs.skip_bench != 'true'
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test ./internal/core/ -run '^TestQ3_TenThousandTagBenchmark$$' -count=1 -timeout 25m -v 2>&1 | tee bench.log
+
+      - name: Extract benchmark metrics summary
+        if: github.event.inputs.skip_bench != 'true'
+        run: |
+          # 提取关键吞吐/延迟指标生成摘要，便于跨 run 对比
+          grep -E "(tags/s|throughput|latency|p99|P99|avg|AVG)" bench.log | tail -40 > bench-summary.txt || true
+          cat bench-summary.txt
+
+      - name: Upload benchmark logs
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bench-logs
+          path: |
+            bench.log
+            bench-summary.txt
+          retention-days: 14
+
+  coverage:
+    name: Driver coverage trend
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      # 重点观测 OPC UA / BACnet 等低覆盖驱动的覆盖率变化
+      - name: Coverage for low-coverage drivers
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          set -o pipefail
+          CGO_ENABLED=0 go test -short -count=1 -coverprofile=cover.out \
+            ./internal/driver/opcua/ ./internal/driver/bacnet/ ./internal/driver/s7/ 2>&1 | tee coverage.log
+          go tool cover -func=cover.out | tail -5
+
+      - name: Upload coverage artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage
+          path: |
+            cover.out
+            coverage.log
+          retention-days: 14

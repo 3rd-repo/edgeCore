@@ -1,0 +1,197 @@
+# 安全自动化流水线：SAST / 漏洞扫描 / SBOM / secret 审查
+#
+# 触发：
+#   - 每周一 02:00 UTC 定期全量扫描（含 SBOM）
+#   - PR / push 到 dev·main 时跑快速安全门禁
+#   - 手动触发
+name: Security
+
+on:
+  pull_request:
+    branches:
+      - dev
+      - main
+      - master
+  push:
+    branches:
+      - dev
+      - main
+      - master
+  schedule:
+    # 每周一 02:00 UTC（北京时间 10:00）
+    - cron: '0 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # ---------- SAST：gosec 静态安全分析 ----------
+  gosec:
+    name: SAST (gosec)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      # 上传 SARIF 到 GitHub code scanning 需要
+      security-events: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Run gosec
+        uses: securego/gosec@master
+        with:
+          # 与 .golangci.yml 的 sim 构建标签保持一致
+          args: '-no-fail -fmt sarif -out gosec.sarif -build-tags sim ./...'
+          # gosec 由 SARIF 报告驱动，不在 CI 中硬失败（初期先观察基线，
+          # 基线清零后可改为 -fail-fast 强制门禁）
+
+      - name: Upload gosec SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: gosec.sarif
+
+      # 快速失败视图：High/Critical 直接失败（与 SARIF 报告并存）
+      - name: Run gosec (gate)
+        if: github.event_name == 'pull_request'
+        uses: securego/gosec@master
+        with:
+          args: '-severity medium -confidence medium -build-tags sim ./...'
+
+  # ---------- 依赖漏洞扫描：govulncheck ----------
+  govulncheck:
+    name: Vulnerability scan (govulncheck)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Run govulncheck
+        uses: golang/govulncheck-action@v1
+        with:
+          go-version-input: '1.26'
+          # 只报告实际被调用的漏洞符号，避免噪音
+          check-latest: true
+
+  # ---------- Secret 扫描：gitleaks ----------
+  gitleaks:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0  # 全量历史扫描
+
+      - name: Run gitleaks
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # ---------- 证书/私钥误提交审查 ----------
+  cert-audit:
+    name: Committed key/cert audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Detect committed private keys (excluding test fixtures)
+        run: |
+          set -e
+          echo "::group::Scanning for private keys in tracked files"
+          # 查找所有 PEM 私钥块（排除 test/ 下的测试夹具与 docs 资产）
+          found=0
+          while IFS= read -r f; do
+            case "$f" in
+              test/*|docs/*|ui/node_modules/*) continue ;;
+            esac
+            if grep -l -E -- "-----BEGIN (RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----" "$f" >/dev/null 2>&1; then
+              echo "::error::Private key committed to repo: $f"
+              found=1
+            fi
+          done < <(git ls-files)
+          if [ "$found" -ne 0 ]; then
+            echo "::error::Private keys must not be committed. Move them to secret management or generate at install time."
+            exit 1
+          fi
+          echo "No private keys found in tracked source files."
+
+      - name: Verify server.crt/key pair is not shipped in dist
+        run: |
+          set -e
+          # 根目录的 server.crt/server.key 是开发运行残留，检查是否被 git 跟踪
+          for f in server.crt server.key; do
+            if git ls-files --error-unmatch "$f" >/dev/null 2>&1; then
+              echo "::warning::$f is tracked in git. Production certs must be generated on the device, not shipped from the repo."
+            fi
+          done
+          echo "Cert shipping audit done."
+
+  # ---------- SBOM 生成（定期 + tag）----------
+  sbom:
+    name: SBOM (syft)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # PR 上不需要每次生成 SBOM，只在定期扫描/手动/tag 时跑
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Build binary for SBOM
+        run: CGO_ENABLED=0 go build -trimpath -o dist/edgeCore ./cmd/
+
+      - name: Generate SBOM (SPDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          format: spdx-json
+          artifact-name: edgeCore-sbom.spdx.json
+
+      - name: Generate SBOM (CycloneDX JSON)
+        uses: anchore/sbom-action@v0
+        with:
+          format: cyclonedx-json
+          artifact-name: edgeCore-sbom.cyclonedx.json
+
+      - name: Scan SBOM for vulnerabilities (grype)
+        uses: anchore/scan-action@v6
+        with:
+          sbom: edgeCore-sbom.spdx.json
+          severity-cutoff: high
+        continue-on-error: true  # 初期仅报告，不阻塞
+
+      - name: Upload SBOM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: |
+            edgeCore-sbom.spdx.json
+            edgeCore-sbom.cyclonedx.json
+          retention-days: 90

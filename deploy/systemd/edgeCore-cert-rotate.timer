@@ -1,0 +1,12 @@
+[Unit]
+Description=Monthly edgeCore TLS certificate rotation timer
+
+[Timer]
+# 每月 1 日 03:17（避开整点）触发；脚本内部有 14 天提前量幂等检查，
+# 实际轮换时机 = 剩余有效期首次低于 14 天的那个月度周期
+OnCalendar=monthly
+Persistent=true
+RandomizedDelaySec=30min
+
+[Install]
+WantedBy=timers.target

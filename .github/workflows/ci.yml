@@ -13,6 +13,30 @@ on:
       - master
 
 jobs:
+  # ---------- Lint 强制门禁（golangci-lint，使用仓库根目录 .golangci.yml）----------
+  lint:
+    name: Lint (golangci-lint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          check-latest: true
+          cache: false
+
+      - name: Run golangci-lint
+        uses: golangci/golangci-lint-action@v7
+        with:
+          # 固定 v1.64 系列：仓库 .golangci.yml 为 v1 配置格式，
+          # 升级到 golangci-lint v2 需先迁移配置（golangci-lint migrate）
+          version: v1.64.8
+          args: --build-tags sim --timeout 5m
+
   gates:
     name: Short tests and build smoke
     runs-on: ubuntu-latest

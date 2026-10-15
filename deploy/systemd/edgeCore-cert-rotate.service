@@ -1,0 +1,15 @@
+[Unit]
+Description=edgeCore TLS certificate rotation
+# 轮换脚本自身做幂等检查（证书剩余有效期 >= 14 天直接跳过），可放心高频调度
+ConditionPathExists=/usr/local/bin/edgeCore/scripts/cert-rotate.sh
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/edgeCore/scripts/cert-rotate.sh
+# 证书轮换失败不应反复重试轰炸日志，等下一个调度周期
+SuccessExitStatus=0
+PrivateTmp=true
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

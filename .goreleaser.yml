@@ -47,6 +47,7 @@ archives:
       - LICENSE*
       - conf/**
       - scripts/**
+      - deploy/**
       - edgeCore.service
       - edgeCore.sh
       - ui/dist/**
@@ -74,6 +75,16 @@ nfpms:
       - src: ./ui/dist
         dst: /usr/local/bin/edgeCore/ui/dist
         type: tree
+      # 证书轮换自动化（systemd timer 每月触发，脚本内 14 天提前量幂等）
+      - src: ./scripts/cert-rotate.sh
+        dst: /usr/local/bin/edgeCore/scripts/cert-rotate.sh
+        type: file
+      - src: ./deploy/systemd/edgeCore-cert-rotate.service
+        dst: /etc/systemd/system/edgeCore-cert-rotate.service
+        type: config
+      - src: ./deploy/systemd/edgeCore-cert-rotate.timer
+        dst: /etc/systemd/system/edgeCore-cert-rotate.timer
+        type: config
     scripts:
       preinstall: scripts/preinstall.sh
       postinstall: scripts/postinstall.sh
