@@ -18,6 +18,13 @@ dist/
 .gomodcache/
 # .github/ 必须纳入版本控制：dependabot.yml 与 workflows/ 不提交则 CI/安全扫描不会生效
 build/
+# 自签证书/私钥为运行时生成，禁止入库（CI cert-audit 会强制审查）
+server.crt
+server.key
+internal/northbound/opcua/server.crt
+internal/northbound/opcua/server.key
+internal/northbound/opcua/server_test.crt
+internal/northbound/opcua/server_test.key
 test/
 vendor/
 .workbuddy/
