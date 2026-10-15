@@ -212,22 +212,26 @@ func (d *OpcUaDriver) SetDeviceConfig(config map[string]any) error {
 		wrapper.collectCycle = time.Duration(v) * time.Millisecond
 	}
 
-	opts, err := d.buildClientOptions(config)
+	// 客户端构建与安全协商（GetEndpoints 属网络操作）合并在
+	// buildClientForWrapper 中：设备离线时协商失败不再让配置失败，
+	// 客户端留空、由重连循环带协商重建，避免加密要求被静默降级。
+	buildCtx, cancelBuild := context.WithTimeout(context.Background(), 8*time.Second)
+	c, err := d.buildClientForWrapper(buildCtx, endpoint, config)
+	cancelBuild()
 	if err != nil {
+		var nego *securityNegotiationError
+		if errors.As(err, &nego) {
+			zap.L().Warn("[OPC UA] Security negotiation deferred, device offline; will retry on reconnect",
+				zap.String("endpoint", endpoint), zap.Error(err))
+			wrapper.Client = nil
+			wrapper.Connected = false
+			wrapper.connMgr.RecordFailure()
+			wrapper.onReconnectNeeded = func() { d.scheduleReconnect(wrapper) }
+			d.clients[endpoint] = wrapper
+			d.activeClient = wrapper
+			return nil
+		}
 		return err
-	}
-
-	// 安全策略/模式需要先经 GetEndpoints 拿到服务器证书与 endpoint 描述，
-	// 因此在 SetDeviceConfig（有完整配置与 endpoint）阶段应用。
-	secOpts, err := d.applySecurityOptions(context.Background(), endpoint, config)
-	if err != nil {
-		return err
-	}
-	opts = append(opts, secOpts...)
-
-	c, err := opcua.NewClient(endpoint, opts...)
-	if err != nil {
-		return fmt.Errorf("failed to create opcua client: %v", err)
 	}
 	wrapper.Client = c
 
@@ -571,8 +575,17 @@ func (d *OpcUaDriver) scheduleReconnect(w *ClientWrapper) {
 		endpoint := w.Endpoint
 		d.mu.Unlock()
 
+		// 客户端尚未构建（配置时设备离线，安全协商被推迟）：
+		// 重连前重建客户端，重新执行安全协商，避免无安全选项的降级连接
 		if client == nil {
-			return fmt.Errorf("opcua client not initialized")
+			c, err := d.buildClientForWrapper(ctx, endpoint, w.Config)
+			if err != nil {
+				return fmt.Errorf("rebuild opcua client: %w", err)
+			}
+			d.mu.Lock()
+			w.Client = c
+			d.mu.Unlock()
+			client = c
 		}
 
 		zap.L().Info("[OPC UA] Reconnecting", zap.String("endpoint", endpoint))
@@ -666,13 +679,41 @@ func (d *OpcUaDriver) applySecurityOptions(ctx context.Context, endpoint string,
 	defer cancel()
 	endpoints, err := opcua.GetEndpoints(discoverCtx, endpoint)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get endpoints for security negotiation: %w", err)
+		return nil, &securityNegotiationError{err: fmt.Errorf("failed to get endpoints for security negotiation: %w", err)}
 	}
 	ep, err := opcua.SelectEndpoint(endpoints, policy, mode)
 	if err != nil {
-		return nil, fmt.Errorf("security negotiation for %s failed: %w", endpoint, err)
+		return nil, &securityNegotiationError{err: fmt.Errorf("security negotiation for %s failed: %w", endpoint, err)}
 	}
 	return []opcua.Option{opcua.SecurityFromEndpoint(ep, authTokenType(config))}, nil
+}
+
+// securityNegotiationError 表示安全协商阶段的瞬态失败（设备离线/不可达等）。
+// 配置仍被接受，客户端留待重连时带协商重建，防止加密要求被静默降级。
+type securityNegotiationError struct {
+	err error
+}
+
+func (e *securityNegotiationError) Error() string { return e.err.Error() }
+func (e *securityNegotiationError) Unwrap() error { return e.err }
+
+// buildClientForWrapper 按当前配置构建 gopcua 客户端：
+// 认证选项 + 安全协商（配置了 security_policy/security_mode 时先经 GetEndpoints）。
+func (d *OpcUaDriver) buildClientForWrapper(ctx context.Context, endpoint string, config map[string]any) (*opcua.Client, error) {
+	opts, err := d.buildClientOptions(config)
+	if err != nil {
+		return nil, err
+	}
+	secOpts, err := d.applySecurityOptions(ctx, endpoint, config)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, secOpts...)
+	c, err := opcua.NewClient(endpoint, opts...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create opcua client: %w", err)
+	}
+	return c, nil
 }
 
 // authTokenType 把 auth_method 映射为 OPC UA UserTokenType。

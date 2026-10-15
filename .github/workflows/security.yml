@@ -52,8 +52,9 @@ jobs:
         run: go install github.com/securego/gosec/v2/cmd/gosec@v2.29.0
 
       - name: Run gosec (SARIF report)
+        # 注意：gosec v2.29 起 -build-tags 改名为 -tags
         run: |
-          gosec -no-fail -fmt sarif -out gosec.sarif -build-tags sim ./...
+          gosec -no-fail -fmt sarif -out gosec.sarif -tags sim ./...
           test -f gosec.sarif || { echo "::error::gosec did not produce gosec.sarif"; exit 1; }
 
       - name: Upload gosec SARIF
@@ -66,7 +67,7 @@ jobs:
       # 首轮先观察基线（continue-on-error），存量问题清零后移除该开关转为硬门禁
       - name: Run gosec (gate)
         if: github.event_name == 'pull_request'
-        run: gosec -severity medium -confidence medium -build-tags sim ./...
+        run: gosec -severity medium -confidence medium -tags sim ./...
         continue-on-error: true
 
   # ---------- 依赖漏洞扫描：govulncheck ----------
