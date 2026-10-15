@@ -30,3 +30,4 @@ vendor/
 .workbuddy/
 dist-build/
 *.zip
+gosec.sarif
