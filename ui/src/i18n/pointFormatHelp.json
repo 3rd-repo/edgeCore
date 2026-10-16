@@ -25,40 +25,148 @@
       "recentToggleTooltip": "Switch between last two formats / 在最近两种格式间切换"
     }
   },
-  "Signed": {
+  "UINT8": {
     "en": {
-      "title": "Signed",
-      "subtitle": "Signed integer",
-      "range": "-32,767 to 32,768",
-      "registers": "1 register",
-      "shortcut": "S",
-      "example": "Use Signed for 16-bit values with sign bit / 用于 16 位有符号整型寄存器"
+      "title": "UINT8",
+      "subtitle": "Unsigned byte (bit-segment)",
+      "range": "0 to 255",
+      "registers": "1 byte",
+      "shortcut": "1",
+      "example": "Use UINT8 for status or version bytes / 用于状态字节、版本号等单字节无符号值"
     },
     "zh": {
-      "title": "有符号整型",
-      "subtitle": "Signed integer",
-      "range": "-32 767 到 32 768",
-      "registers": "1 个寄存器",
-      "shortcut": "S",
-      "example": "用于 16 位有符号整型寄存器（如温度偏移值） / Use Signed for 16-bit integers with sign"
+      "title": "无符号字节",
+      "subtitle": "Unsigned byte（位段）",
+      "range": "0 到 255",
+      "registers": "1 字节",
+      "shortcut": "1",
+      "example": "用于部分仪表的状态/版本字节等单字节无符号值 / Single unsigned byte"
     }
   },
-  "Unsigned": {
+  "INT8": {
     "en": {
-      "title": "Unsigned",
-      "subtitle": "Unsigned integer",
+      "title": "INT8",
+      "subtitle": "Signed byte (bit-segment)",
+      "range": "-128 to 127",
+      "registers": "1 byte",
+      "shortcut": "2",
+      "example": "Use INT8 for signed single-byte values / 用于 -128–127 的单字节有符号值"
+    },
+    "zh": {
+      "title": "有符号字节",
+      "subtitle": "Signed byte（位段）",
+      "range": "-128 到 127",
+      "registers": "1 字节",
+      "shortcut": "2",
+      "example": "用于带符号的单字节数值 / Single signed byte"
+    }
+  },
+  "BIT": {
+    "en": {
+      "title": "BIT",
+      "subtitle": "Switch value",
+      "range": "0 / 1",
+      "registers": "1 byte",
+      "shortcut": "3",
+      "example": "Use BIT for coils or discrete inputs / 用于线圈、离散输入等开关量"
+    },
+    "zh": {
+      "title": "开关量位",
+      "subtitle": "Switch value",
+      "range": "0 / 1",
+      "registers": "1 字节",
+      "shortcut": "3",
+      "example": "用于线圈、离散输入等 0/1 开关量 / On/off bit"
+    }
+  },
+  "BCD8": {
+    "en": {
+      "title": "BCD8",
+      "subtitle": "Single-byte BCD",
+      "range": "0–99 (BCD)",
+      "registers": "1 byte",
+      "shortcut": "4",
+      "example": "Use BCD8 for old meter dial values / 用于老式表计的 BCD 拨码值"
+    },
+    "zh": {
+      "title": "单字节 BCD",
+      "subtitle": "Single-byte BCD",
+      "range": "0–99（BCD 码）",
+      "registers": "1 字节",
+      "shortcut": "4",
+      "example": "用于老式表计拨码值，如 0x25 解析为 25 / BCD-encoded dial value"
+    }
+  },
+  "Signed_AB": {
+    "en": {
+      "title": "Signed_AB",
+      "subtitle": "Signed integer (A=B high, B=low)",
+      "range": "-32,768 to 32,767",
+      "registers": "1 register",
+      "shortcut": "S",
+      "example": "Use Signed_AB for standard big-endian 16-bit values / 用于标准大端的 16 位有符号整型"
+    },
+    "zh": {
+      "title": "有符号整型 AB",
+      "subtitle": "Signed integer（高字节在前）",
+      "range": "-32 768 到 32 767",
+      "registers": "1 个寄存器",
+      "shortcut": "S",
+      "example": "用于标准字节序（高字节在前）的 16 位有符号整型，如温度偏移值 / Standard big-endian 16-bit signed"
+    }
+  },
+  "Signed_BA": {
+    "en": {
+      "title": "Signed_BA",
+      "subtitle": "Signed integer, byte-swapped (B=high, A=low)",
+      "range": "-32,768 to 32,767",
+      "registers": "1 register",
+      "shortcut": "s",
+      "example": "Use Signed_BA when the device sends low byte first / 用于低字节在前的 16 位有符号整型"
+    },
+    "zh": {
+      "title": "有符号整型 BA",
+      "subtitle": "Signed integer（低字节在前）",
+      "range": "-32 768 到 32 767",
+      "registers": "1 个寄存器",
+      "shortcut": "s",
+      "example": "用于低字节在前的 16 位有符号整型（部分设备为小端字节序）/ Byte-swapped 16-bit signed"
+    }
+  },
+  "Unsigned_AB": {
+    "en": {
+      "title": "Unsigned_AB",
+      "subtitle": "Unsigned integer (A=high, B=low)",
       "range": "0 to 65,535",
       "registers": "1 register",
       "shortcut": "U",
-      "example": "Use Unsigned for counters or IDs / 用于计数器、设备编号等无符号数"
+      "example": "Use Unsigned_AB for counters or IDs / 用于计数器、设备编号等无符号数"
     },
     "zh": {
-      "title": "无符号整型",
-      "subtitle": "Unsigned integer",
+      "title": "无符号整型 AB",
+      "subtitle": "Unsigned integer（高字节在前）",
       "range": "0 到 65 535",
       "registers": "1 个寄存器",
       "shortcut": "U",
-      "example": "用于计数器、设备编号等始终为非负的数值 / Use Unsigned for non-negative values"
+      "example": "用于标准字节序的计数器、设备编号等非负数值 / Standard big-endian unsigned"
+    }
+  },
+  "Unsigned_BA": {
+    "en": {
+      "title": "Unsigned_BA",
+      "subtitle": "Unsigned integer, byte-swapped (B=high, A=low)",
+      "range": "0 to 65,535",
+      "registers": "1 register",
+      "shortcut": "u",
+      "example": "Use Unsigned_BA when the device sends low byte first / 用于低字节在前的无符号整型"
+    },
+    "zh": {
+      "title": "无符号整型 BA",
+      "subtitle": "Unsigned integer（低字节在前）",
+      "range": "0 到 65 535",
+      "registers": "1 个寄存器",
+      "shortcut": "u",
+      "example": "用于低字节在前的无符号数值（小端字节序设备）/ Byte-swapped unsigned"
     }
   },
   "Hex": {
@@ -97,17 +205,17 @@
       "example": "用于逐位查看状态（如继电器开关量） / Use Binary for bit-level inspection"
     }
   },
-  "Long AB CD": {
+  "Signed_ABCD": {
     "en": {
-      "title": "Long AB CD",
+      "title": "Signed_ABCD",
       "subtitle": "32-bit signed (AB CD)",
       "range": "32-bit signed integer",
       "registers": "2 registers",
       "shortcut": "L1",
-      "example": "Use Long AB CD when words are stored as AB CD / 用于高字在前、低字在后的 32 位长整型"
+      "example": "Use Signed_ABCD when words are stored as AB CD / 用于高字在前、低字在后的 32 位长整型"
     },
     "zh": {
-      "title": "长整型 AB CD",
+      "title": "有符号整型 ABCD",
       "subtitle": "32 位长整型（AB CD）",
       "range": "32 位有符号整型",
       "registers": "2 个寄存器",
@@ -115,17 +223,17 @@
       "example": "适用于寄存器顺序为 AB CD 的 32 位长整型数值 / Use when register order is AB CD"
     }
   },
-  "Long CD AB": {
+  "Signed_CDAB": {
     "en": {
-      "title": "Long CD AB",
+      "title": "Signed_CDAB",
       "subtitle": "32-bit signed (CD AB)",
       "range": "32-bit signed integer",
       "registers": "2 registers",
       "shortcut": "L2",
-      "example": "Use Long CD AB when words are swapped / 用于字顺序为 CD AB 的 32 位长整型"
+      "example": "Use Signed_CDAB when words are swapped / 用于字顺序为 CD AB 的 32 位长整型"
     },
     "zh": {
-      "title": "长整型 CD AB",
+      "title": "有符号整型 CDAB",
       "subtitle": "32 位长整型（CD AB）",
       "range": "32 位有符号整型",
       "registers": "2 个寄存器",
@@ -133,17 +241,17 @@
       "example": "适用于寄存器顺序为 CD AB（高低字交换）的场景 / Use when word order is CD AB"
     }
   },
-  "Long BA DC": {
+  "Signed_BADC": {
     "en": {
-      "title": "Long BA DC",
+      "title": "Signed_BADC",
       "subtitle": "32-bit signed (BA DC)",
       "range": "32-bit signed integer",
       "registers": "2 registers",
       "shortcut": "L3",
-      "example": "Use Long BA DC for little-endian words / 用于 BA DC 次序的 32 位长整型"
+      "example": "Use Signed_BADC for little-endian words / 用于 BA DC 次序的 32 位长整型"
     },
     "zh": {
-      "title": "长整型 BA DC",
+      "title": "有符号整型 BADC",
       "subtitle": "32 位长整型（BA DC）",
       "range": "32 位有符号整型",
       "registers": "2 个寄存器",
@@ -151,17 +259,17 @@
       "example": "适用于字节与字均为小端顺序的 32 位整型 / Use for little-endian word/byte order"
     }
   },
-  "Long DC BA": {
+  "Signed_DCBA": {
     "en": {
-      "title": "Long DC BA",
+      "title": "Signed_DCBA",
       "subtitle": "32-bit signed (DC BA)",
       "range": "32-bit signed integer",
       "registers": "2 registers",
       "shortcut": "L4",
-      "example": "Use Long DC BA when both words and bytes are reversed / 用于 DC BA 顺序的 32 位长整型"
+      "example": "Use Signed_DCBA when both words and bytes are reversed / 用于 DC BA 顺序的 32 位长整型"
     },
     "zh": {
-      "title": "长整型 DC BA",
+      "title": "有符号整型 DCBA",
       "subtitle": "32 位长整型（DC BA）",
       "range": "32 位有符号整型",
       "registers": "2 个寄存器",
@@ -169,17 +277,89 @@
       "example": "适用于字与字节完全反序排列的 32 位整型 / Use when both words and bytes are reversed"
     }
   },
-  "Float AB CD": {
+  "Unsigned_ABCD": {
     "en": {
-      "title": "Float AB CD",
+      "title": "Unsigned_ABCD",
+      "subtitle": "32-bit unsigned (AB CD)",
+      "range": "32-bit unsigned integer",
+      "registers": "2 registers",
+      "shortcut": "U1",
+      "example": "Use Unsigned_ABCD for big-endian 32-bit counters / 用于高字在前的 32 位无符号累计量"
+    },
+    "zh": {
+      "title": "无符号整型 ABCD",
+      "subtitle": "32 位无符号整型（AB CD）",
+      "range": "32 位无符号整型",
+      "registers": "2 个寄存器",
+      "shortcut": "U1",
+      "example": "适用于高字在前的 32 位无符号值，如累计脉冲、运行时长 / Big-endian 32-bit unsigned"
+    }
+  },
+  "Unsigned_CDAB": {
+    "en": {
+      "title": "Unsigned_CDAB",
+      "subtitle": "32-bit unsigned (CD AB)",
+      "range": "32-bit unsigned integer",
+      "registers": "2 registers",
+      "shortcut": "U2",
+      "example": "Use Unsigned_CDAB when words are swapped / 用于高低字交换的 32 位无符号"
+    },
+    "zh": {
+      "title": "无符号整型 CDAB",
+      "subtitle": "32 位无符号整型（CD AB）",
+      "range": "32 位无符号整型",
+      "registers": "2 个寄存器",
+      "shortcut": "U2",
+      "example": "适用于高低字交换的 32 位无符号值 / Word-swapped 32-bit unsigned"
+    }
+  },
+  "Unsigned_BADC": {
+    "en": {
+      "title": "Unsigned_BADC",
+      "subtitle": "32-bit unsigned (BA DC)",
+      "range": "32-bit unsigned integer",
+      "registers": "2 registers",
+      "shortcut": "U3",
+      "example": "Use Unsigned_BADC for byte-swapped words / 用于字内字节也交换的 32 位无符号（少见）"
+    },
+    "zh": {
+      "title": "无符号整型 BADC",
+      "subtitle": "32 位无符号整型（BA DC）",
+      "range": "32 位无符号整型",
+      "registers": "2 个寄存器",
+      "shortcut": "U3",
+      "example": "适用于字内字节也交换的 32 位无符号值（少见） / Byte-swapped 32-bit unsigned"
+    }
+  },
+  "Unsigned_DCBA": {
+    "en": {
+      "title": "Unsigned_DCBA",
+      "subtitle": "32-bit unsigned (DC BA)",
+      "range": "32-bit unsigned integer",
+      "registers": "2 registers",
+      "shortcut": "U4",
+      "example": "Use Unsigned_DCBA for fully little-endian values / 用于完全小端的 32 位无符号（少见）"
+    },
+    "zh": {
+      "title": "无符号整型 DCBA",
+      "subtitle": "32 位无符号整型（DC BA）",
+      "range": "32 位无符号整型",
+      "registers": "2 个寄存器",
+      "shortcut": "U4",
+      "example": "适用于字与字节完全反序的 32 位无符号值（少见） / Fully little-endian 32-bit unsigned"
+    }
+  },
+  "Float_ABCD": {
+    "en": {
+      "title": "Float_ABCD",
       "subtitle": "Single-precision float (AB CD)",
       "range": "32-bit IEEE 754 float",
       "registers": "2 registers",
       "shortcut": "F1",
-      "example": "Use Float AB CD for standard big-endian float / 用于 AB CD 顺序的单精度浮点"
+      "example": "Use Float_ABCD for standard big-endian float / 用于 AB CD 顺序的单精度浮点"
     },
     "zh": {
-      "title": "单精度浮点 AB CD",
+      "title": "单精度浮点 ABCD",
       "subtitle": "单精度浮点（AB CD）",
       "range": "32 位 IEEE 754 浮点",
       "registers": "2 个寄存器",
@@ -187,17 +367,17 @@
       "example": "适用于寄存器高字在前、低字在后的单精度浮点数 / Use for big-endian word order float"
     }
   },
-  "Float CD AB": {
+  "Float_CDAB": {
     "en": {
-      "title": "Float CD AB",
+      "title": "Float_CDAB",
       "subtitle": "Single-precision float (CD AB)",
       "range": "32-bit IEEE 754 float",
       "registers": "2 registers",
       "shortcut": "F2",
-      "example": "Use Float CD AB when words are swapped / 用于 CD AB 顺序的单精度浮点"
+      "example": "Use Float_CDAB when words are swapped / 用于 CD AB 顺序的单精度浮点"
     },
     "zh": {
-      "title": "单精度浮点 CD AB",
+      "title": "单精度浮点 CDAB",
       "subtitle": "单精度浮点（CD AB）",
       "range": "32 位 IEEE 754 浮点",
       "registers": "2 个寄存器",
@@ -205,17 +385,17 @@
       "example": "适用于高低字交换的单精度浮点数 / Use when word order is CD AB"
     }
   },
-  "Float BA DC": {
+  "Float_BADC": {
     "en": {
-      "title": "Float BA DC",
+      "title": "Float_BADC",
       "subtitle": "Single-precision float (BA DC)",
       "range": "32-bit IEEE 754 float",
       "registers": "2 registers",
       "shortcut": "F3",
-      "example": "Use Float BA DC for little-endian words / 用于 BA DC 顺序的单精度浮点"
+      "example": "Use Float_BADC for little-endian words / 用于 BA DC 顺序的单精度浮点"
     },
     "zh": {
-      "title": "单精度浮点 BA DC",
+      "title": "单精度浮点 BADC",
       "subtitle": "单精度浮点（BA DC）",
       "range": "32 位 IEEE 754 浮点",
       "registers": "2 个寄存器",
@@ -223,17 +403,17 @@
       "example": "适用于字小端排列的单精度浮点数 / Use for little-endian word order float"
     }
   },
-  "Float DC BA": {
+  "Float_DCBA": {
     "en": {
-      "title": "Float DC BA",
+      "title": "Float_DCBA",
       "subtitle": "Single-precision float (DC BA)",
       "range": "32-bit IEEE 754 float",
       "registers": "2 registers",
       "shortcut": "F4",
-      "example": "Use Float DC BA when both words and bytes are reversed / 用于 DC BA 顺序的单精度浮点"
+      "example": "Use Float_DCBA when both words and bytes are reversed / 用于 DC BA 顺序的单精度浮点"
     },
     "zh": {
-      "title": "单精度浮点 DC BA",
+      "title": "单精度浮点 DCBA",
       "subtitle": "单精度浮点（DC BA）",
       "range": "32 位 IEEE 754 浮点",
       "registers": "2 个寄存器",
@@ -241,17 +421,17 @@
       "example": "适用于字与字节完全反序排列的单精度浮点数 / Use when both words and bytes are reversed"
     }
   },
-  "Double AB CDEF GH": {
+  "Double_ABCDEFGH": {
     "en": {
-      "title": "Double AB CDEF GH",
+      "title": "Double_ABCDEFGH",
       "subtitle": "Double-precision float (AB CDEF GH)",
       "range": "64-bit IEEE 754 double",
       "registers": "4 registers",
       "shortcut": "D1",
-      "example": "Use Double AB CDEF GH for standard big-endian double / 用于 AB CDEF GH 顺序的双精度浮点"
+      "example": "Use Double_ABCDEFGH for standard big-endian double / 用于 AB CDEF GH 顺序的双精度浮点"
     },
     "zh": {
-      "title": "双精度浮点 AB CDEF GH",
+      "title": "双精度浮点 ABCDEFGH",
       "subtitle": "双精度浮点（AB CDEF GH）",
       "range": "64 位 IEEE 754 双精度浮点",
       "registers": "4 个寄存器",
@@ -259,17 +439,17 @@
       "example": "适用于寄存器从高到低顺序为 AB CDEF GH 的双精度浮点数 / Use for big-endian 64-bit float"
     }
   },
-  "Double GH EFCD AB": {
+  "Double_GHEFCDAB": {
     "en": {
-      "title": "Double GH EFCD AB",
+      "title": "Double_GHEFCDAB",
       "subtitle": "Double-precision float (GH EFCD AB)",
       "range": "64-bit IEEE 754 double",
       "registers": "4 registers",
       "shortcut": "D2",
-      "example": "Use Double GH EFCD AB when word groups are reversed / 用于 GH EFCD AB 顺序的双精度浮点"
+      "example": "Use Double_GHEFCDAB when word groups are reversed / 用于 GH EFCD AB 顺序的双精度浮点"
     },
     "zh": {
-      "title": "双精度浮点 GH EFCD AB",
+      "title": "双精度浮点 GHEFCDAB",
       "subtitle": "双精度浮点（GH EFCD AB）",
       "range": "64 位 IEEE 754 双精度浮点",
       "registers": "4 个寄存器",
@@ -277,17 +457,17 @@
       "example": "适用于寄存器分组顺序反转的双精度浮点数 / Use when word groups are reversed"
     }
   },
-  "Double BA DC FE HG": {
+  "Double_BADCFEHG": {
     "en": {
-      "title": "Double BA DC FE HG",
+      "title": "Double_BADCFEHG",
       "subtitle": "Double-precision float (BA DC FE HG)",
       "range": "64-bit IEEE 754 double",
       "registers": "4 registers",
       "shortcut": "D3",
-      "example": "Use Double BA DC FE HG for little-endian words / 用于 BA DC FE HG 顺序的双精度浮点"
+      "example": "Use Double_BADCFEHG for little-endian words / 用于 BA DC FE HG 顺序的双精度浮点"
     },
     "zh": {
-      "title": "双精度浮点 BA DC FE HG",
+      "title": "双精度浮点 BADCFEHG",
       "subtitle": "双精度浮点（BA DC FE HG）",
       "range": "64 位 IEEE 754 双精度浮点",
       "registers": "4 个寄存器",
@@ -295,17 +475,17 @@
       "example": "适用于字小端排列的双精度浮点数 / Use for little-endian word order double"
     }
   },
-  "Double HG FE DC BA": {
+  "Double_HGFEDCBA": {
     "en": {
-      "title": "Double HG FE DC BA",
+      "title": "Double_HGFEDCBA",
       "subtitle": "Double-precision float (HG FE DC BA)",
       "range": "64-bit IEEE 754 double",
       "registers": "4 registers",
       "shortcut": "D4",
-      "example": "Use Double HG FE DC BA when both words and bytes are reversed / 用于 HG FE DC BA 顺序的双精度浮点"
+      "example": "Use Double_HGFEDCBA when both words and bytes are reversed / 用于 HG FE DC BA 顺序的双精度浮点"
     },
     "zh": {
-      "title": "双精度浮点 HG FE DC BA",
+      "title": "双精度浮点 HGFEDCBA",
       "subtitle": "双精度浮点（HG FE DC BA）",
       "range": "64 位 IEEE 754 双精度浮点",
       "registers": "4 个寄存器",

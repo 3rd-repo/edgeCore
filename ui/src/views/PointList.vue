@@ -34,9 +34,13 @@
             <template #icon><IconRefresh /></template>
             刷新
           </a-button>
-          <a-button type="text" size="small" class="help-trigger-btn" @click="helpVisible = true">
+          <a-button type="text" size="small" class="help-trigger-btn" @click="openHelpWithCalculator">
             <template #icon><IconQuestionCircle /></template>
             配置指引
+          </a-button>
+          <a-button type="text" size="small" class="help-trigger-btn" @click="calcVisible = true">
+            <template #icon><IconCode /></template>
+            解析计算器
           </a-button>
         </a-space>
       </div>
@@ -703,7 +707,7 @@
         <a-col :span="24">
           <a-input
             v-model="quickValidate.expected"
-            placeholder="期望工程值(可选) 例如: 230.1 或 LongABCD 11112222"
+            placeholder="期望工程值(可选) 例如: 230.1 或 Signed_ABCD 11112222"
             size="small"
           />
         </a-col>
@@ -1320,6 +1324,9 @@
       :channel-protocol="channelProtocol"
     />
 
+    <!-- 解析计算器（浮动可拖拽） -->
+    <ParseCalculator v-model:visible="calcVisible" />
+
     <!-- OPC-UA Scanner -->
     <OpcuaScanner
       v-model:visible="opcuaScannerVisible"
@@ -1347,14 +1354,16 @@ import {
   IconArrowLeft, IconSearch, IconPlus, IconDelete, IconRefresh,
   IconEdit, IconFile, IconBug, IconCheckCircle, IconClockCircle,
   IconCloseCircle, IconScan, IconCopy, IconClose, IconThunderbolt,
-  IconTag, IconFolder, IconSend, IconQuestionCircle, IconUpload,
+  IconTag, IconFolder, IconSend, IconQuestionCircle, IconUpload, IconCode,
 } from '@arco-design/web-vue/es/icon'
 import { Message } from '@arco-design/web-vue'
 import HelpDrawer from '../components/HelpDrawer.vue'
+import ParseCalculator from '../components/ParseCalculator.vue'
 import OpcuaScanner from '../components/OpcuaScanner.vue'
 import BACnetScanner from '../components/BACnetScanner.vue'
 import ModbusSlavePointView from '../components/ModbusSlavePointView.vue'
 import { enrichModbusPoint } from '@/utils/modbusRegisterGroups'
+import { formatPresets, inferPresetId, presetIdToFormat } from '@/utils/formatPresets'
 import { formatProtocolTag } from '@/utils/protocolLabel'
 import ModbusPointConfig from '../components/point-config/ModbusPointConfig.vue'
 import OpcuaPointConfig from '../components/point-config/OpcuaPointConfig.vue'
@@ -1474,7 +1483,7 @@ const mapDevicePoint = (p, now = new Date()) => enrichModbusPoint({
     id: p.id,
     name: p.name,
     address: p.address,
-    format: p.format || '',
+    format: (p.format || '').trim(),
     datatype: p.datatype || p.dataType,
     parse_type: p.parse_type || p.parseType || '',
     unit: p.unit || '',
@@ -1499,6 +1508,13 @@ const selection = reactive({
 
 // Help Drawer State
 const helpVisible = ref(false)
+
+// 解析计算器（打开帮助时一并弹出，浮动可拖拽、可独立关闭）
+const calcVisible = ref(false)
+const openHelpWithCalculator = () => {
+  helpVisible.value = true
+  calcVisible.value = true
+}
 
 // OPC-UA Scanner State
 const opcuaScannerVisible = ref(false)
@@ -1854,168 +1870,6 @@ const datatypeOptions = [
     'LWORD'
 ]
 
-const formatPresets = [
-    {
-        id: 'UINT8',
-        label: 'UINT8 (1 字节 / 位段)',
-        bytes: 1,
-        parseType: 'UINT8',
-        wordOrder: 'AB',
-        datatype: 'uint8'
-    },
-    {
-        id: 'INT8',
-        label: 'INT8 (1 字节 / 位段)',
-        bytes: 1,
-        parseType: 'INT8',
-        wordOrder: 'AB',
-        datatype: 'int8'
-    },
-    {
-        id: 'BIT',
-        label: 'BIT (1 字节 / 位段)',
-        bytes: 1,
-        parseType: 'BIT',
-        wordOrder: 'AB',
-        datatype: 'bool'
-    },
-    {
-        id: 'BCD8',
-        label: 'BCD8 (1 字节 / 位段)',
-        bytes: 1,
-        parseType: 'BCD8',
-        wordOrder: 'AB',
-        datatype: 'uint8'
-    },
-    {
-        id: 'Signed',
-        label: 'Signed (2 字节 / 1 寄存器)',
-        bytes: 2,
-        parseType: 'INT16',
-        wordOrder: 'AB',
-        datatype: 'int16'
-    },
-    {
-        id: 'Unsigned',
-        label: 'Unsigned (2 字节 / 1 寄存器)',
-        bytes: 2,
-        parseType: 'UINT16',
-        wordOrder: 'AB',
-        datatype: 'uint16'
-    },
-    {
-        id: 'Hex',
-        label: 'Hex (2 字节 / 1 寄存器)',
-        bytes: 2,
-        parseType: 'UINT16',
-        wordOrder: 'AB',
-        datatype: 'uint16'
-    },
-    {
-        id: 'Binary',
-        label: 'Binary (2 字节 / 1 寄存器)',
-        bytes: 2,
-        parseType: 'UINT16',
-        wordOrder: 'AB',
-        datatype: 'uint16'
-    },
-    {
-        id: 'LongABCD',
-        label: 'LongABCD (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'INT32',
-        wordOrder: 'ABCD',
-        datatype: 'int32'
-    },
-    {
-        id: 'LongCDAB',
-        label: 'LongCDAB (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'INT32',
-        wordOrder: 'CDAB',
-        datatype: 'int32'
-    },
-    {
-        id: 'LongBADC',
-        label: 'LongBADC (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'INT32',
-        wordOrder: 'BADC',
-        datatype: 'int32'
-    },
-    {
-        id: 'LongDCBA',
-        label: 'LongDCBA (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'INT32',
-        wordOrder: 'DCBA',
-        datatype: 'int32'
-    },
-    {
-        id: 'FloatABCD',
-        label: 'FloatABCD (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'FLOAT32',
-        wordOrder: 'ABCD',
-        datatype: 'float32'
-    },
-    {
-        id: 'FloatCDAB',
-        label: 'FloatCDAB (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'FLOAT32',
-        wordOrder: 'CDAB',
-        datatype: 'float32'
-    },
-    {
-        id: 'FloatBADC',
-        label: 'FloatBADC (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'FLOAT32',
-        wordOrder: 'BADC',
-        datatype: 'float32'
-    },
-    {
-        id: 'FloatDCBA',
-        label: 'FloatDCBA (4 字节 / 2 寄存器)',
-        bytes: 4,
-        parseType: 'FLOAT32',
-        wordOrder: 'DCBA',
-        datatype: 'float32'
-    },
-    {
-        id: 'DoubleABCDEFGH',
-        label: 'DoubleABCDEFGH (8 字节 / 4 寄存器)',
-        bytes: 8,
-        parseType: 'FLOAT64',
-        wordOrder: 'ABCD',
-        datatype: 'float64'
-    },
-    {
-        id: 'DoubleGHEFCDAB',
-        label: 'DoubleGHEFCDAB (8 字节 / 4 寄存器)',
-        bytes: 8,
-        parseType: 'FLOAT64',
-        wordOrder: 'CDAB',
-        datatype: 'float64'
-    },
-    {
-        id: 'DoubleBADCFEHG',
-        label: 'DoubleBADCFEHG (8 字节 / 4 寄存器)',
-        bytes: 8,
-        parseType: 'FLOAT64',
-        wordOrder: 'BADC',
-        datatype: 'float64'
-    },
-    {
-        id: 'DoubleHGFEDCBA',
-        label: 'DoubleHGFEDCBA (8 字节 / 4 寄存器)',
-        bytes: 8,
-        parseType: 'FLOAT64',
-        wordOrder: 'DCBA',
-        datatype: 'float64'
-    }
-]
 
 const formatPresetSelected = ref(null)
 const recentFormatIds = ref([])
@@ -2277,13 +2131,6 @@ const updateRecentFormats = (id) => {
     recentFormatIds.value = list.slice(0, 2)
 }
 
-const presetIdToFormat = (id) => {
-    if (!id) return ''
-    if (id === 'Hex') return 'hex'
-    if (id === 'Binary') return 'binary'
-    return id
-}
-
 // datatype → parseType 兜底映射（无格式预设可推断时使用，如 string/word 等）
 const datatypeToParseType = (dt) => {
     const map = {
@@ -2311,76 +2158,8 @@ const datatypeToParseType = (dt) => {
     pointDialog.form.datatype = datatype
   }
 
-const inferPresetFromPoint = (p) => {
-    if (!p) return null
-    const dt = (p.datatype || '').toLowerCase()
-    const parseType = (p.parse_type || p.parseType || '').toUpperCase()
-    const fmt = (p.format || '').toLowerCase()
-    const wo = (p.word_order || '').toUpperCase()
-
-    if (fmt === 'hex') return 'Hex'
-    if (fmt === 'binary') return 'Binary'
-
-    // 格式预设描述原始字节解析，必须优先依据 parse_type，不能被
-    // 缩放后的显示/存储/北向 datatype 反向推断覆盖。
-    if (parseType === 'INT16' || parseType === 'INT16_SWAP') return 'Signed'
-    if (parseType === 'UINT16' || parseType === 'UINT16_SWAP') return 'Unsigned'
-    if (parseType === 'INT32' || parseType === 'INT32_SWAP') {
-        if (wo === 'CDAB') return 'LongCDAB'
-        if (wo === 'BADC') return 'LongBADC'
-        if (wo === 'DCBA') return 'LongDCBA'
-        return 'LongABCD'
-    }
-    if (parseType === 'FLOAT32' || parseType === 'FLOAT32_SWAP') {
-        if (wo === 'CDAB') return 'FloatCDAB'
-        if (wo === 'BADC') return 'FloatBADC'
-        if (wo === 'DCBA') return 'FloatDCBA'
-        return 'FloatABCD'
-    }
-    if (parseType === 'FLOAT64' || parseType === 'FLOAT64_SWAP') {
-        if (wo === 'CDAB') return 'DoubleGHEFCDAB'
-        if (wo === 'BADC') return 'DoubleBADCFEHG'
-        if (wo === 'DCBA') return 'DoubleHGFEDCBA'
-        return 'DoubleABCDEFGH'
-    }
-    if (parseType === 'BIT') return 'BIT'
-    if (parseType === 'INT8') return 'INT8'
-    if (parseType === 'UINT8') return 'UINT8'
-    if (parseType === 'BCD8') return 'BCD8'
-
-    if (dt === 'bool') return 'BIT'
-    if (dt === 'int8') return 'INT8'
-    if (dt === 'uint8') {
-        if (fmt === 'bcd8') return 'BCD8'
-        return 'UINT8'
-    }
-
-    if (dt === 'int16') return 'Signed'
-    if (dt === 'uint16') return 'Unsigned'
-
-    if (dt === 'int32') {
-        if (wo === 'CDAB') return 'LongCDAB'
-        if (wo === 'BADC') return 'LongBADC'
-        if (wo === 'DCBA') return 'LongDCBA'
-        return 'LongABCD'
-    }
-
-    if (dt === 'float32') {
-        if (wo === 'CDAB') return 'FloatCDAB'
-        if (wo === 'BADC') return 'FloatBADC'
-        if (wo === 'DCBA') return 'FloatDCBA'
-        return 'FloatABCD'
-    }
-
-    if (dt === 'float64') {
-        if (wo === 'CDAB') return 'DoubleGHEFCDAB'
-        if (wo === 'BADC') return 'DoubleBADCFEHG'
-        if (wo === 'DCBA') return 'DoubleHGFEDCBA'
-        return 'DoubleABCDEFGH'
-    }
-
-    return null
-}
+// 点位 → 预设推断已收敛到 utils/formatPresets.js（预设表与推断逻辑单一事实源）
+const inferPresetFromPoint = inferPresetId
 
 const onSelectFormatPreset = (id) => {
     if (!id) {

@@ -118,16 +118,18 @@ const { t, locale } = useI18n({
 watch(() => props.lang, (val) => { locale.value = val || 'zh' })
 
 const groupMeta = {
-  one:   { bytes: 1, label: '1 字节' },
+  one:   { bytes: 1, label: '1 字节 / 位段' },
   two:   { bytes: 2, label: '2 字节 / 1 寄存器' },
   four:  { bytes: 4, label: '4 字节 / 2 寄存器' },
   eight: { bytes: 8, label: '8 字节 / 4 寄存器' }
 }
 
+// 分组与命名来自 utils/formatPresets.js 的预设表（单一事实源），此处按组列出 id 供帮助表渲染
 const formatGroups = [
-  { key: 'two',   names: ['Signed', 'Unsigned', 'Hex', 'Binary'] },
-  { key: 'four',  names: ['Long AB CD', 'Long CD AB', 'Long BA DC', 'Long DC BA', 'Float AB CD', 'Float CD AB', 'Float BA DC', 'Float DC BA'] },
-  { key: 'eight', names: ['Double AB CDEF GH', 'Double GH EFCD AB', 'Double BA DC FE HG', 'Double HG FE DC BA'] }
+  { key: 'one',   names: ['UINT8', 'INT8', 'BIT', 'BCD8'] },
+  { key: 'two',   names: ['Signed_AB', 'Signed_BA', 'Unsigned_AB', 'Unsigned_BA', 'Hex', 'Binary'] },
+  { key: 'four',  names: ['Signed_ABCD', 'Signed_CDAB', 'Signed_BADC', 'Signed_DCBA', 'Unsigned_ABCD', 'Unsigned_CDAB', 'Unsigned_BADC', 'Unsigned_DCBA', 'Float_ABCD', 'Float_CDAB', 'Float_BADC', 'Float_DCBA'] },
+  { key: 'eight', names: ['Double_ABCDEFGH', 'Double_GHEFCDAB', 'Double_BADCFEHG', 'Double_HGFEDCBA'] }
 ]
 
 const flatFormats = computed(() => {

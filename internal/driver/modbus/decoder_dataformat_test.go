@@ -176,3 +176,109 @@ func TestPointDecoder_Encode_WithWriteFormula(t *testing.T) {
 		t.Fatalf("expect 60, got %d", regs[0])
 	}
 }
+
+func TestResolvePointFormat_Swap16_OnlyFromPointWordOrder(t *testing.T) {
+	// 点位自身 DCBA → Swap16
+	cfg := dataformat.ResolvePointFormat(model.Point{DataType: "int16", WordOrder: "DCBA"}, "ABCD")
+	if !cfg.Swap16 {
+		t.Fatalf("expect Swap16=true for point WordOrder=DCBA")
+	}
+	// 点位自身 BADC → Swap16
+	cfg = dataformat.ResolvePointFormat(model.Point{DataType: "uint16", WordOrder: "BADC"}, "ABCD")
+	if !cfg.Swap16 {
+		t.Fatalf("expect Swap16=true for point WordOrder=BADC")
+	}
+	// 点位未配置 word order，仅设备默认 DCBA → 不触发 Swap16（存量通道回归保护）
+	cfg = dataformat.ResolvePointFormat(model.Point{DataType: "int16"}, "DCBA")
+	if cfg.Swap16 {
+		t.Fatalf("expect Swap16=false when only device default is DCBA")
+	}
+	// 点位 AB/CDAB → 不交换
+	cfg = dataformat.ResolvePointFormat(model.Point{DataType: "int16", WordOrder: "CDAB"}, "ABCD")
+	if cfg.Swap16 {
+		t.Fatalf("expect Swap16=false for CDAB")
+	}
+}
+
+func TestPointDecoder_Decode_WithDataformat_Int16_BA(t *testing.T) {
+	d := NewPointDecoder("ABCD", 0, 0)
+	d.EnableDataformatDecoder(true)
+
+	// UI 的 Signed_BA 落盘：parse_type=INT16, word_order=DCBA
+	point := model.Point{ID: "p-ba", DataType: "int16", ParseType: "INT16", WordOrder: "DCBA"}
+	raw := []byte{0x01, 0x00} // 线上 [01 00]，BA 语义 → 0x0001 = 1
+
+	val, quality, err := d.Decode(point, raw)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if quality != "Good" {
+		t.Fatalf("expect Good, got %s", quality)
+	}
+	if v, ok := val.(int16); !ok || v != 1 {
+		t.Fatalf("expect int16 1, got %#v", val)
+	}
+}
+
+func TestPointDecoder_Decode_WithDataformat_Int16_BA_DeviceDefaultNoSwap(t *testing.T) {
+	// 设备默认 DCBA、点位未配置 word order → 2 字节仍按大端解析（回归保护）
+	d := NewPointDecoder("DCBA", 0, 0)
+	d.EnableDataformatDecoder(true)
+
+	point := model.Point{ID: "p-default", DataType: "int16"}
+	val, _, err := d.Decode(point, []byte{0x01, 0x00})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, ok := val.(int16); !ok || v != 256 {
+		t.Fatalf("expect int16 256 (big-endian), got %#v", val)
+	}
+}
+
+func TestPointDecoder_DecodeRaw_Uint16_BA(t *testing.T) {
+	// 传统 decodeRaw 路径（未启用 dataformat 解码器）也要尊重点位 word order
+	d := NewPointDecoder("ABCD", 0, 0)
+
+	point := model.Point{ID: "p-raw", DataType: "uint16", WordOrder: "DCBA"}
+	val, err := d.decodeRaw(point, []byte{0x01, 0x00})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, ok := val.(uint16); !ok || v != 1 {
+		t.Fatalf("expect uint16 1, got %#v", val)
+	}
+
+	// AB 点位不受影响
+	pointAB := model.Point{ID: "p-raw-ab", DataType: "uint16", WordOrder: "ABCD"}
+	val, err = d.decodeRaw(pointAB, []byte{0x01, 0x00})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if v, ok := val.(uint16); !ok || v != 256 {
+		t.Fatalf("expect uint16 256, got %#v", val)
+	}
+}
+
+func TestPointDecoder_Encode_Uint16_BA(t *testing.T) {
+	d := NewPointDecoder("ABCD", 0, 0)
+
+	// 写 256（0x0100）到 BA 点位 → 寄存器应为 0x0001
+	point := model.Point{ID: "p-w-ba", DataType: "uint16", WordOrder: "DCBA"}
+	regs, err := d.Encode(point, 256)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+	if len(regs) != 1 || regs[0] != 1 {
+		t.Fatalf("expect reg 1, got %#v", regs)
+	}
+
+	// AB 点位写 256 → 寄存器 0x0100 = 256
+	pointAB := model.Point{ID: "p-w-ab", DataType: "uint16", WordOrder: "ABCD"}
+	regs, err = d.Encode(pointAB, 256)
+	if err != nil {
+		t.Fatalf("encode error: %v", err)
+	}
+	if len(regs) != 1 || regs[0] != 256 {
+		t.Fatalf("expect reg 256, got %#v", regs)
+	}
+}

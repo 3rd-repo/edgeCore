@@ -13,6 +13,10 @@ type PointFormatConfig struct {
 	Type     FormatType
 	Order    binary.ByteOrder
 	ReadExpr string
+	// Swap16 表示 16 位解析前需交换两个字节（低字节在前的设备）。
+	// 仅当点位自身配置了会交换字节的 word order（BADC/DCBA/BA）时为 true；
+	// 设备级默认 word order 不触发该标志，避免存量 2 字节点位被意外换序。
+	Swap16 bool
 }
 
 func ResolvePointFormat(p model.Point, defaultWordOrder string) PointFormatConfig {
@@ -35,6 +39,8 @@ func ResolvePointFormat(p model.Point, defaultWordOrder string) PointFormatConfi
 	}
 	format := strings.ToLower(p.Format)
 	wordOrder := p.WordOrder
+	// Swap16 只依据点位自身的 word order 判定（先于设备默认值兜底）
+	swap16 := swapsBytes16(wordOrder)
 	if wordOrder == "" {
 		wordOrder = defaultWordOrder
 	}
@@ -48,7 +54,18 @@ func ResolvePointFormat(p model.Point, defaultWordOrder string) PointFormatConfi
 		Type:     ft,
 		Order:    order,
 		ReadExpr: readExpr,
+		Swap16:   swap16,
 	}
+}
+
+// swapsBytes16 判断 word order 是否意味着 16 位寄存器内字节交换。
+// UI 的 2 字节 BA 选项落盘为 DCBA；BADC 对 2 字节同样是字节交换，一并兼容。
+func swapsBytes16(wordOrder string) bool {
+	switch strings.ToUpper(strings.TrimSpace(wordOrder)) {
+	case "BADC", "DCBA", "BA":
+		return true
+	}
+	return false
 }
 
 func resolveWordOrder(name string) binary.ByteOrder {

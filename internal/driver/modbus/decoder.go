@@ -185,8 +185,14 @@ func (d *PointDecoder) decodeRaw(point model.Point, b []byte) (any, error) {
 
 	switch dataType {
 	case "int16":
+		if swapsBytes16(point) {
+			return int16(binary.LittleEndian.Uint16(b)), nil
+		}
 		return int16(binary.BigEndian.Uint16(b)), nil
 	case "uint16":
+		if swapsBytes16(point) {
+			return binary.LittleEndian.Uint16(b), nil
+		}
 		return binary.BigEndian.Uint16(b), nil
 	case "float32":
 		if len(b) < 4 {
@@ -215,6 +221,12 @@ func (d *PointDecoder) decodeRaw(point model.Point, b []byte) (any, error) {
 func (d *PointDecoder) decodeWithDataformat(point model.Point, b []byte) (any, string, error) {
 	cfg := dataformat.ResolvePointFormat(point, d.byteOrder4)
 	order := cfg.Order
+
+	// 16 位点位若自身配置了会交换字节的 word order（如 UI 的 BA → DCBA），
+	// dataformat 包的 Uint16 恒按大端解析，这里在解析前先行换序
+	if cfg.Swap16 && len(b) == 2 {
+		b = []byte{b[1], b[0]}
+	}
 
 	s, err := dataformat.FormatPoint(b, order, cfg.Type, cfg.ReadExpr)
 	if err != nil {
@@ -352,6 +364,16 @@ func (d *PointDecoder) applyByteOrder(b []byte) []byte {
 	return newB
 }
 
+// swapsBytes16 判断点位自身 word order 是否意味着 16 位寄存器内字节交换
+// （UI 的 2 字节 BA 选项落盘为 DCBA；与 dataformat.ResolvePointFormat 的 Swap16 判定一致）。
+func swapsBytes16(point model.Point) bool {
+	switch strings.ToUpper(strings.TrimSpace(point.WordOrder)) {
+	case "BADC", "DCBA", "BA":
+		return true
+	}
+	return false
+}
+
 // Encode 将值编码为寄存器数组（用于写入）
 func (d *PointDecoder) Encode(point model.Point, value any) ([]uint16, error) {
 	rawValue := value
@@ -482,6 +504,10 @@ func (d *PointDecoder) encodeRaw(point model.Point, value any) ([]uint16, error)
 			intVal = uint16(i)
 		default:
 			return nil, fmt.Errorf("unsupported value type: %T", value)
+		}
+		// 与读取侧一致：点位自身 word order 要求 16 位字节交换时，写寄存器值先行换序
+		if swapsBytes16(point) {
+			intVal = intVal<<8 | intVal>>8
 		}
 		return []uint16{intVal}, nil
 

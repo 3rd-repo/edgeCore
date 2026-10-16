@@ -96,7 +96,7 @@
           </template>
 
           <template #pointType="{ record }">
-            <a-tooltip :content="`设备协议: ${record.format || inferFormatFromPoint(record) || '—'} | 存储/北向: ${record.datatype || '—'}`">
+            <a-tooltip :content="`设备协议: ${(record.format || '').trim() || inferPresetId(record) || '—'} | 存储/北向: ${record.datatype || '—'}`">
               <span class="cell-text font-mono">{{ formatPointType(record) }}</span>
             </a-tooltip>
           </template>
@@ -163,6 +163,7 @@ import {
   formatPlcAddress,
   formatOffsetAddress
 } from '@/utils/modbusRegisterGroups'
+import { inferPresetId } from '@/utils/formatPresets'
 
 const props = defineProps({
   allPoints: {
@@ -349,46 +350,13 @@ const formatValue = (val) => {
   return String(val)
 }
 
-// 类型列：设备协议类型（format，如 Unsigned）为主 + 本地解析类型（datatype，如 uint16）为辅
-// format 为空（存量旧点位/未选预设）时按 datatype+word_order 推断，保持列显示一致
-const inferFormatFromPoint = (record) => {
-  if (!record) return ''
-  const dt = (record.datatype || '').toLowerCase()
-  const fmt = (record.format || '').toLowerCase()
-  const wo = (record.word_order || '').toUpperCase()
-
-  if (fmt === 'hex') return 'hex'
-  if (fmt === 'binary') return 'binary'
-  if (dt === 'bool') return 'BIT'
-  if (dt === 'int8') return 'INT8'
-  if (dt === 'uint8') return fmt === 'bcd8' ? 'BCD8' : 'UINT8'
-  if (dt === 'int16') return 'Signed'
-  if (dt === 'uint16') return 'Unsigned'
-  if (dt === 'int32') {
-    if (wo === 'CDAB') return 'LongCDAB'
-    if (wo === 'BADC') return 'LongBADC'
-    if (wo === 'DCBA') return 'LongDCBA'
-    return 'LongABCD'
-  }
-  if (dt === 'float32') {
-    if (wo === 'CDAB') return 'FloatCDAB'
-    if (wo === 'BADC') return 'FloatBADC'
-    if (wo === 'DCBA') return 'FloatDCBA'
-    return 'FloatABCD'
-  }
-  if (dt === 'float64') {
-    if (wo === 'CDAB') return 'DoubleGHEFCDAB'
-    if (wo === 'BADC') return 'DoubleBADCFEHG'
-    if (wo === 'DCBA') return 'DoubleHGFEDCBA'
-    return 'DoubleABCDEFGH'
-  }
-  return ''
-}
-
+// 类型列：设备协议类型（format，即预设 id）为主 + 本地解析类型（datatype，如 uint16）为辅
+// format 为空（未选预设的点位）时按 parse_type/datatype+word_order 推断，保持列显示一致
+// （推断逻辑收敛在 utils/formatPresets.js 的 inferPresetId）
 const formatPointType = (record) => {
   const fmt = (record?.format || '').trim()
   const dt = record?.datatype || ''
-  const displayFmt = fmt || inferFormatFromPoint(record)
+  const displayFmt = fmt || inferPresetId(record)
   if (displayFmt) return dt && dt.toLowerCase() !== displayFmt.toLowerCase() ? `${displayFmt} (${dt})` : displayFmt
   return dt || 'N/A'
 }

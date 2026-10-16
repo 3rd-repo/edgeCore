@@ -50,7 +50,7 @@
                 <span>format preset</span>
               </div>
               <div class="help-doc-row__desc">
-                一组常用组合（Signed / Unsigned / FloatABCD / DoubleABCD …），选中后<strong>一次性</strong>自动填充字节数、解析类型、数据类型与字序。
+                一组常用组合（Signed / Unsigned / Signed_ABCD / Float_ABCD …），按 1 字节(位段)、2 字节(1 寄存器)、4 字节(2 寄存器)、8 字节(4 寄存器)分组，选中后<strong>一次性</strong>自动填充字节数、解析类型、数据类型与字序。
                 新手建议先选预设，再微调；手动逐项配置时务必保证三者自洽。
               </div>
             </div>
@@ -236,6 +236,47 @@
           </section>
 
           <section class="help-doc-section">
+            <h2 class="help-doc-section__title">数据格式预设速查（按字节数分组）</h2>
+            <p class="help-doc-section__text">
+              格式预设 = 字节数 + 解析类型 + 数据类型 + 字序 的一键组合，命名规则为 <code>类型_字序 (N位 / N寄存器)</code>。新手直接选预设即可完成字节解析配置；选完预设后仍可单独微调某一字段，预设与手动字段完全等价（对照关系见下文）。
+            </p>
+            <template v-for="group in modbusPresetGroups" :key="group.key">
+              <h3 class="help-doc-subtitle">{{ group.title }}</h3>
+              <table class="help-doc-table">
+                <thead>
+                  <tr><th>预设</th><th>解析类型</th><th>数据类型</th><th>典型场景</th></tr>
+                </thead>
+                <tbody>
+                  <tr v-for="p in group.presets" :key="p.name">
+                    <td><code>{{ p.name }}</code></td>
+                    <td>{{ p.parse }}</td>
+                    <td>{{ p.datatype }}</td>
+                    <td>{{ p.usage }}</td>
+                  </tr>
+                </tbody>
+              </table>
+            </template>
+            <h3 class="help-doc-subtitle">字序（AB / BA / ABCD / CDAB / BADC / DCBA）怎么读</h3>
+            <div class="help-doc-card">
+              <div class="help-doc-row help-doc-row--stack">
+                <div class="help-doc-row__label"><strong>2 字节：AB / BA</strong><span>寄存器内两个字节谁在前</span></div>
+                <div class="help-doc-row__desc">寄存器原始字节 <code>01 00</code>：AB 按大端读出 256；BA 表示低字节在前，读出 1。界面上选择 BA 后落盘为 DCBA，网关在解析前自动换序，读写方向一致，无需手工换算。</div>
+              </div>
+              <div class="help-doc-row help-doc-row--stack">
+                <div class="help-doc-row__label"><strong>4 字节：ABCD / CDAB / BADC / DCBA</strong><span>寄存器间字序 + 字内字节序</span></div>
+                <div class="help-doc-row__desc">以 32 位值 <code>0x11223344</code> 为例：ABCD = <code>11 22 33 44</code>（高字在前，最常见）；CDAB = <code>33 44 11 22</code>（高低字交换，国产仪表常见）；BADC = <code>22 11 44 33</code>（字内字节也交换）；DCBA = <code>44 33 22 11</code>（完全小端）。选错字序是"数值巨大 / 乱码"的头号原因，用「快速验证」对照原始 4 字节报文即可确认。</div>
+              </div>
+              <div class="help-doc-row help-doc-row--stack">
+                <div class="help-doc-row__label"><strong>预设与手动字段的等价关系</strong><span>改数据类型不影响解析</span></div>
+                <div class="help-doc-row__desc">例如 <code>Signed_BA</code> 等价于 字节数=2 + 解析类型=INT16 + 字序=BA + 数据类型=int16；<code>Float_CDAB</code> 等价于 字节数=4 + 解析类型=FLOAT32 + 字序=CDAB + 数据类型=float32。选完预设后单独改数据类型不会改变解析宽度（宽度由预设字节数锁定），缩放后仍能得到小数。</div>
+              </div>
+            </div>
+            <p class="help-doc-example">
+              常见设备对照：温湿度变送器（×10、补码温度）→ <code>Unsigned_AB</code> / <code>Signed_AB</code> + scale 0.1；电表 32 位电能（高字在前）→ <code>Signed_ABCD</code> / <code>Unsigned_ABCD</code>；标准大端浮点 → <code>Float_ABCD</code>，高低字交换浮点 → <code>Float_CDAB</code>；双精度能量累计量 → <code>Double_ABCDEFGH</code> 系列；状态字 / 位掩码 → <code>Hex</code> 或 <code>Binary</code>。
+            </p>
+          </section>
+
+          <section class="help-doc-section">
             <h2 class="help-doc-section__title">解析类型与输出类型示例</h2>
             <div class="help-doc-card">
               <div v-for="item in modbusParseTypeMap" :key="item.parse" class="help-doc-row help-doc-row--stack">
@@ -296,6 +337,9 @@
               <li>必要时配置 scale/offset/公式，把原始值转为工程量。</li>
             </ol>
             <p class="help-doc-example">
+              新手捷径：直接在「数据格式（格式预设）」中选择与设备一致的预设（如 <code>Unsigned_AB</code>、<code>Signed_ABCD</code>、<code>Float_ABCD</code>），即可一次性填好字节数、解析类型、数据类型与字序，再按需补 scale / offset 即可。
+            </p>
+            <p class="help-doc-example">
               例：某 485 温湿度变送器地址 1、9600/8/N/1，保持寄存器 40001（湿度，无符号）与 40002（温度，有符号），
               原始值需 ÷10。配置：字节数=2、解析类型=UINT16、数据类型=uint16、地址=0、scale=0.1（湿度）；
               温度则解析类型=INT16、数据类型=int16、地址=1、scale=0.1。
@@ -355,6 +399,7 @@
                 <tr><td>parse_type</td><td>UINT16</td><td>INT16</td><td>原始字节解析类型</td></tr>
                 <tr><td>datatype</td><td>float32</td><td>float32</td><td>显示、存储与北向输出类型</td></tr>
                 <tr><td>word_order</td><td>AB</td><td>AB</td><td>单字大端，应答帧高位在前</td></tr>
+                <tr><td>格式预设</td><td>Unsigned_AB</td><td>Signed_AB</td><td>一键等同上方字节数/解析类型/数据类型/字序组合</td></tr>
                 <tr><td>scale</td><td>0.1</td><td>0.1</td><td>"实际值 ×10" → 实际 = 原始 ×0.1</td></tr>
                 <tr><td>offset</td><td>0</td><td>0</td><td>—</td></tr>
                 <tr><td>unit</td><td>%RH</td><td>℃</td><td>—</td></tr>
@@ -398,8 +443,8 @@
                 485 接线（A/B 是否反接）。用 pyserial 直接读设备能通、网关却读不到，通常是串口参数/从站地址不匹配。
               </a-collapse-item>
               <a-collapse-item header="如何配置浮点数 (Float32)?" key="2">
-                字节数必须设为 <strong>4</strong>（占用 2 个连续寄存器），解析类型选 <strong>FLOAT32</strong>、
-                数据类型选 <strong>float32</strong>，并按设备文档设置字序（ABCD / DCBA / CDAB / BADC）。
+                最简单的方式：格式预设直接选 <strong>Float_ABCD</strong>（标准大端）或 <strong>Float_CDAB</strong>（高低字交换），
+                字节数、解析类型、数据类型、字序会一并填好。手动配置则需 字节数=4（2 个连续寄存器）+ 解析类型 FLOAT32 + 数据类型 float32 + 按设备文档设置字序。
               </a-collapse-item>
               <a-collapse-item header="浮点数显示为乱码或极大值?" key="3">
                 绝大多数是<strong>字序选错</strong>或<strong>字节数误设为 2</strong>。先在"快速验证"里对照原始 4 字节报文，
@@ -414,8 +459,20 @@
                 网关底层按 rtu:///dev/ttySx?baudrate=…&parity=… 形式打开串口，任一参数不对都会打不开。
               </a-collapse-item>
               <a-collapse-item header="32 位值被拆成高低字怎么办?" key="6">
-                直接用 <strong>INT32 / UINT32 / FLOAT32</strong> + 正确的字序解析，不要拆成两个 16 位点位手动拼装，
-                后者极易因字序/越界而出错。
+                直接选 <strong>Signed_ABCD</strong> / <strong>Unsigned_ABCD</strong> / <strong>Float_ABCD</strong> 等预设（或等价的 INT32 / UINT32 / FLOAT32 + 正确字序）一次解析到位，
+                不要拆成两个 16 位点位手动拼装，后者极易因字序/越界而出错。
+              </a-collapse-item>
+              <a-collapse-item header="预设名称里的 ABCD / BA 是什么意思?" key="7">
+                后缀是<strong>字节排列顺序</strong>：A/B/C/D 依次代表第 1~4 个字节。2 字节预设只有 AB（高字节在前，标准大端）和 BA（低字节在前）两种；
+                4 字节预设的 ABCD 为高字在前，CDAB 为高低字交换，BADC/DCBA 为更少见的字节交换排列。选预设后若数值不对，优先怀疑字序，用"快速验证"对照原始字节。
+              </a-collapse-item>
+              <a-collapse-item header="2 字节的值读出来像字节颠倒（如 256 变成 1）?" key="8">
+                这是设备的 16 位寄存器为<strong>低字节在前</strong>（小端）导致。把预设从 Signed_AB / Unsigned_AB 换成对应的 <strong>Signed_BA</strong> / <strong>Unsigned_BA</strong> 即可，
+                网关会在解析前自动交换字节，写入方向同样自动反换，无需其他配置。
+              </a-collapse-item>
+              <a-collapse-item header="选了预设后还能改其他字段吗?" key="9">
+                可以。预设只负责一键填好 字节数/解析类型/数据类型/字序，之后任意字段都可以单独微调。常见的做法是：选 <code>Signed_AB</code> 预设 + 把数据类型改为 float32 + 配 scale=0.1，
+                解析宽度仍按预设的 2 字节执行，工程值输出为小数。
               </a-collapse-item>
             </a-collapse>
           </section>
@@ -1025,6 +1082,7 @@
 
 <script setup>
 import { formatProtocolTag } from '@/utils/protocolLabel'
+import { formatPresets, FORMAT_GROUP_TITLES } from '@/utils/formatPresets'
 import ChannelHelpBlock from '@/components/channel-help/ChannelHelpBlock.vue'
 import HelpDocFlow from '@/components/channel-help/HelpDocFlow.vue'
 
@@ -1054,18 +1112,56 @@ const modbusRegisterSpecs = [
   { name: '离散输入', meta: 'Discrete Input', range: '10001 – 19999' },
 ]
 
+// 速查表从 utils/formatPresets.js 的预设表派生（单一事实源），这里只维护各预设的场景说明
+const modbusPresetUsage = {
+  UINT8: '0–255 单字节无符号（部分仪表的状态/版本字节）',
+  INT8: '-128–127 单字节有符号',
+  BIT: '开关量位（线圈、离散输入常用）',
+  BCD8: '单字节 BCD 码（老式表计拨码值）',
+  Signed_AB: '标准大端 16 位有符号（温度补码等，最常用）',
+  Signed_BA: '低字节在前的 16 位有符号（小端仪表）',
+  Unsigned_AB: '标准大端 16 位无符号（湿度 ×10、计数器等）',
+  Unsigned_BA: '低字节在前的 16 位无符号',
+  Hex: '以 0x 十六进制显示原始寄存器（对照协议文档）',
+  Binary: '以 0b 二进制逐位查看状态（继电器/标志位）',
+  Signed_ABCD: '高字在前 32 位有符号（电表电能等，最常见）',
+  Signed_CDAB: '高低字交换的 32 位有符号（部分国产仪表）',
+  Signed_BADC: '字内字节也交换的 32 位有符号（少见）',
+  Signed_DCBA: '完全小端的 32 位有符号（少见）',
+  Unsigned_ABCD: '高字在前 32 位无符号（累计脉冲、运行时长）',
+  Unsigned_CDAB: '高低字交换的 32 位无符号',
+  Unsigned_BADC: '字内字节也交换的 32 位无符号（少见）',
+  Unsigned_DCBA: '完全小端的 32 位无符号（少见）',
+  Float_ABCD: '标准大端单精度浮点（多数 485 仪表）',
+  Float_CDAB: '高低字交换的单精度浮点',
+  Float_BADC: '字内字节也交换的单精度浮点（少见）',
+  Float_DCBA: '完全小端的单精度浮点（少见）',
+  Double_ABCDEFGH: '标准大端双精度浮点（高精度能量累计量）',
+  Double_GHEFCDAB: '高低字对调的双精度浮点',
+  Double_BADCFEHG: '每字内字节也互换的双精度浮点（少见）',
+  Double_HGFEDCBA: '完全小端的双精度浮点（少见）',
+}
+
+const modbusPresetGroups = [1, 2, 4, 8].map((bytes) => ({
+  key: { 1: 'one', 2: 'two', 4: 'four', 8: 'eight' }[bytes],
+  title: bytes === 1 ? '1 字节（位段，无字序）' : FORMAT_GROUP_TITLES[bytes],
+  presets: formatPresets
+    .filter((p) => p.bytes === bytes)
+    .map((p) => ({ name: p.id, parse: p.parseType, datatype: p.datatype, usage: modbusPresetUsage[p.id] || '' })),
+}))
+
 const modbusParseTypeMap = [
-  { parse: 'BIT', datatype: 'bool / int8', usage: '单 bit 开关量（线圈、离散输入常用）' },
-  { parse: 'UINT8 / INT8', datatype: 'uint8 / int8', usage: '1 字节有/无符号整数（字节型点位）' },
-  { parse: 'UINT16 / INT16', datatype: 'uint16 / int16', usage: '1 寄存器（16 位）整数' },
-  { parse: 'UINT16_SWAP / INT16_SWAP', datatype: 'uint16 / int16', usage: '同上，但字内字节交换（AB ↔ BA）' },
+  { parse: 'BIT', datatype: 'bool / int8', usage: '单 bit 开关量（线圈、离散输入常用）；预设 BIT' },
+  { parse: 'UINT8 / INT8', datatype: 'uint8 / int8', usage: '1 字节有/无符号整数（字节型点位）；预设 UINT8 / INT8' },
+  { parse: 'UINT16 / INT16', datatype: 'uint16 / int16', usage: '1 寄存器（16 位）整数；预设 Unsigned_AB / Signed_AB' },
+  { parse: 'UINT16_SWAP / INT16_SWAP', datatype: 'uint16 / int16', usage: '同上，但字内字节交换（AB ↔ BA）；预设 Unsigned_BA / Signed_BA' },
   { parse: 'BCD16', datatype: 'uint16', usage: '16 位 BCD 码，如 0x1234 解析为 1234' },
   { parse: 'FLOAT16', datatype: 'float32', usage: '半精度浮点（较少见）' },
-  { parse: 'UINT32 / INT32', datatype: 'uint32 / int32', usage: '2 寄存器（32 位）长整型' },
-  { parse: 'FLOAT32', datatype: 'float32', usage: '2 寄存器（32 位）单精度浮点' },
+  { parse: 'UINT32 / INT32', datatype: 'uint32 / int32', usage: '2 寄存器（32 位）长整型；预设 Unsigned_ABCD~DCBA / Signed_ABCD~DCBA 四种字序' },
+  { parse: 'FLOAT32', datatype: 'float32', usage: '2 寄存器（32 位）单精度浮点；预设 Float_ABCD / Float_CDAB 等' },
   { parse: 'FLOAT32_SWAP', datatype: 'float32', usage: '同上，字内字节交换' },
   { parse: 'BCD32', datatype: 'uint32', usage: '32 位 BCD 码' },
-  { parse: 'UINT64 / INT64 / FLOAT64', datatype: 'uint64 / int64 / float64', usage: '4 寄存器（64 位）整型或双精度浮点' },
+  { parse: 'UINT64 / INT64 / FLOAT64', datatype: 'uint64 / int64 / float64', usage: '4 寄存器（64 位）整型或双精度浮点；预设 Double_ABCDEFGH 系列' },
   { parse: 'STRING', datatype: 'string', usage: '按字节顺序拼接为 ASCII 字符串' },
 ]
 
