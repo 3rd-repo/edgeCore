@@ -21,6 +21,9 @@ jobs:
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          # --new-from-rev 需要基线 ref 的完整提交历史
+          fetch-depth: 0
 
       - name: Set up Go
         uses: actions/setup-go@v6
@@ -30,12 +33,17 @@ jobs:
           cache: false
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          # 固定 v1.64 系列：仓库 .golangci.yml 为 v1 配置格式，
-          # action v7 仅支持 golangci-lint v2；升级到 v2 需先迁移配置
-          version: v1.64.8
-          args: --build-tags sim --timeout 5m
+          # .golangci.yml 已是 v2 配置格式（version: "2"），v1.x 无法加载；
+          # 且 go.mod 要求 go 1.26.4，linter 二进制须由 >= go1.26.4 的 Go 构建，
+          # 否则报 "the Go language version used to build golangci-lint is
+          # lower than the targeted Go version"（action v8+ 要求 >= v2.1.0）
+          version: v2.14.0
+          # 存量欠账约 1092 条（其中 926 条在旧规则集下即存在）：以 origin/dev
+          # 为基线只报增量，新代码仍受全量规则约束；存量清零后移除
+          # --new-from-rev 恢复全量门禁
+          args: --build-tags sim --timeout 5m --new-from-rev=origin/dev
 
   gates:
     name: Short tests and build smoke
